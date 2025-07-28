@@ -20,6 +20,24 @@ GeoSubSampler is designed to help geologists and GIS professionals manage large 
 
 ### 1. Structural Orientation Subsampling
 
+#### Input Field Configuration
+
+##### Structural Data Fields
+- **Layer Selection**: Choose the point layer containing structural measurements
+- **Dip Field**: Field containing dip angle values
+  - *Type*: Numeric field from selected layer
+  - *Description*: Angle of dip from horizontal (0-90°)
+- **Dip Direction/Strike Field**: Field containing directional information
+  - *Type*: Numeric field from selected layer
+  - *Description*: Either dip direction (0-360°) or strike direction
+- **Dip Direction Checkbox**: Toggle between dip direction and strike convention
+  - *Description*: Check if using dip direction, uncheck if using strike
+
+##### Contact/Boundary Data
+- **Polyline Layer**: Layer containing geological contacts or boundaries
+  - *Type*: Line layer
+  - *Description*: Used for first-order subsampling relative to geological boundaries   
+
 #### Stochastic Subsampling
 Randomly samples a percentage of orientation points.
 
@@ -71,23 +89,34 @@ Retains orientation points based on proximity to geological contacts and angular
   - *Units*: Degrees
   - *Description*: Tolerance for angular relationships between measurements and contacts
 
-### 2. Input Field Configuration
+### 2. Fault/Line Processing
 
-#### Structural Data Fields
-- **Layer Selection**: Choose the point layer containing structural measurements
-- **Dip Field**: Field containing dip angle values
-  - *Type*: Numeric field from selected layer
-  - *Description*: Angle of dip from horizontal (0-90°)
-- **Dip Direction/Strike Field**: Field containing directional information
-  - *Type*: Numeric field from selected layer
-  - *Description*: Either dip direction (0-360°) or strike direction
-- **Dip Direction Checkbox**: Toggle between dip direction and strike convention
-  - *Description*: Check if using dip direction, uncheck if using strike
+#### Segment Merging
+Merges connected fault segments based on geometric criteria.   
+WARNING: This is not particulary optimised and may take hours to complete on large (>10k polylines) datasets   
 
-#### Contact/Boundary Data
-- **Polyline Layer**: Layer containing geological contacts or boundaries
-  - *Type*: Line layer
-  - *Description*: Used for first-order subsampling relative to geological boundaries
+**Parameters:**
+- **Distance Tolerance**: Maximum distance between line endpoints for merging
+  - *Type*: Float
+  - *Units*: Layer units
+  - *Description*: Endpoints closer than this distance are candidates for merging
+- **Search Angle Tolerance**: Maximum angle difference for parallel lines
+  - *Type*: Float
+  - *Units*: Degrees
+  - *Description*: Lines with orientations within this tolerance are considered parallel
+- **Join Angle**: Minimum angle at connection points
+  - *Type*: Float
+  - *Units*: Degrees
+  - *Description*: Rejects connections that create angles smaller than this value
+
+#### Length-Based Subsampling
+Filters fault lines based on minimum length criteria.
+
+**Parameters:**
+- **Minimum Fault Length**: Threshold length for fault retention
+  - *Type*: Float
+  - *Units*: Layer units
+  - *Description*: Faults shorter than this length are removed
 
 ### 3. Polygon Processing
 
@@ -131,34 +160,6 @@ Define the hierarchy for polygon merging decisions:
   - *Units*: Same as minimum diameter
   - *Description*: Increment between successive processing scales
 
-### 4. Fault/Line Processing
-
-#### Segment Merging
-Merges connected fault segments based on geometric criteria.   
-WARNING: This is not particulary optimised and may take hours to complete on large (>10k polylines) datasets   
-
-**Parameters:**
-- **Distance Tolerance**: Maximum distance between line endpoints for merging
-  - *Type*: Float
-  - *Units*: Layer units
-  - *Description*: Endpoints closer than this distance are candidates for merging
-- **Search Angle Tolerance**: Maximum angle difference for parallel lines
-  - *Type*: Float
-  - *Units*: Degrees
-  - *Description*: Lines with orientations within this tolerance are considered parallel
-- **Join Angle**: Minimum angle at connection points
-  - *Type*: Float
-  - *Units*: Degrees
-  - *Description*: Rejects connections that create angles smaller than this value
-
-#### Length-Based Subsampling
-Filters fault lines based on minimum length criteria.
-
-**Parameters:**
-- **Minimum Fault Length**: Threshold length for fault retention
-  - *Type*: Float
-  - *Units*: Layer units
-  - *Description*: Faults shorter than this length are removed
 
 ## Technical Notes
 
