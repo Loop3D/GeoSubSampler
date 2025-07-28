@@ -120,7 +120,7 @@ Define the hierarchy for polygon merging decisions:
 - **Dyke Field**: Field identifying intrusive bodies
   - *Type*: Attribute field
 - **Dyke Codes**: Comma-separated list of codes identifying dykes/intrusions
-  - *Format*: Text list (e.g., "DY1,DY2,INT")
+  - *Format*: Text list (e.g., DY1, DY2, INTX-D )
   - *Description*: Special processing applied to polygons with these codes
 
 #### Series Processing Options
@@ -134,7 +134,8 @@ Define the hierarchy for polygon merging decisions:
 ### 4. Fault/Line Processing
 
 #### Segment Merging
-Merges connected fault segments based on geometric criteria.
+Merges connected fault segments based on geometric criteria.   
+WARNING: This is not particulary optimised and may take hours to complete on large (>10k polylines) datasets   
 
 **Parameters:**
 - **Distance Tolerance**: Maximum distance between line endpoints for merging
@@ -191,10 +192,11 @@ The plugin includes validation for:
 - GeoPandas
 - NumPy
 - Random and time modules for statistical operations
+- rtree for polyline merging
 
 ## License
 
-This program is free software under the GNU General Public License v2.0 or later.
+This program is free software under the MIT License.
 
 ## Author
 
