@@ -414,97 +414,90 @@ class GeoSubSampler:
             )
 
     def firstOrder(self):
-        # Create an instance of StructuralOrientationSubSampler
-        pointSubsampler = self.setUpPointSampler()
-
-        if pointSubsampler:
-            distance_buffer = float(self.dockwidget.lineEdit_1o_distance.text())
-            angle_tolerance = float(self.dockwidget.lineEdit_1o_angle.text())
-            contact_gdf = gpd.read_file(
-                self.dockwidget.mMapLayerComboBox_points_polylines.currentLayer().source()
-            )
-
-            # Perform grid subsampling
-            gdf2 = pointSubsampler.firstOrderSubsampling(
-                contact_gdf=contact_gdf,
-                distance_buffer=distance_buffer,
-                angle_tolerance=angle_tolerance,
-            )
-
-            # Write GeoPandas back to file and reload
-            self.finalisePointSampler(
-                gdf2,
-                self.points_layer,
-                "firstOrder",
-                str(distance_buffer) + "_" + str(angle_tolerance),
-            )
+        pass
 
     def minPolyArea(self):
-        self.polgyon_layer = (
+        self.polygon_layer = (
             self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
         )
-        if os.path.exists(self.polgyon_layer.source()):
-            distance_threshold = float(self.dockwidget.lineEdit_node_tolerance.text())
-            lithoname = self.dockwidget.mFieldComboBox_priority_5.currentText()
-            strat1 = self.dockwidget.mFieldComboBox_priority_1.currentText()
-            strat2 = self.dockwidget.mFieldComboBox_priority_2.currentText()
-            strat3 = self.dockwidget.mFieldComboBox_priority_3.currentText()
-            strat4 = self.dockwidget.mFieldComboBox_priority_4.currentText()
-            dyke_codes = (
-                self.dockwidget.plainTextEdit_dyke_Codes.toPlainText()
-                .replace(" ", "")
-                .split(",")
-            )
-            dyke_field = self.dockwidget.mFieldComboBox_dyke.currentText()
-            dyke_index = self.dockwidget.mFieldComboBox_dyke.currentIndex()
-            incScale = self.dockwidget.mQgsDoubleSpinBox_upinc.value()
-
-            if self.dockwidget.checkBox_series.isChecked():
-                minScale = float(self.dockwidget.mQgsDoubleSpinBox_upinc.value())
-                maxScale = float(self.dockwidget.lineEdit_polygon_area.text())
-            else:
-                minScale = float(self.dockwidget.lineEdit_polygon_area.text())
-                maxScale = float(self.dockwidget.lineEdit_polygon_area.text())
-
-            for upScale in np.arange(minScale, maxScale + 0.001, incScale):
-                min_area_threshold = ((upScale / 2) ** 2) * np.pi
-                parameter = str(upScale)
-                crs = self.polgyon_layer.crs()
-                if crs.isGeographic():
-                    min_area_threshold = min_area_threshold / (110000 * 110000)
-                    distance_threshold = distance_threshold / 110000
-
-                layer_path = os.path.dirname(self.polgyon_layer.source())
-                new_path = (
-                    layer_path
-                    + "/"
-                    + self.polgyon_layer.name()
-                    + "_min_area_"
-                    + parameter
-                    + ".shp"
+        if self.polygon_layer is not None:
+            if os.path.exists(self.polygon_layer.source()) :
+                distance_threshold = float(self.dockwidget.lineEdit_node_tolerance.text())
+                lithoname = self.dockwidget.mFieldComboBox_priority_5.currentText()
+                strat1 = self.dockwidget.mFieldComboBox_priority_1.currentText()
+                strat2 = self.dockwidget.mFieldComboBox_priority_2.currentText()
+                strat3 = self.dockwidget.mFieldComboBox_priority_3.currentText()
+                strat4 = self.dockwidget.mFieldComboBox_priority_4.currentText()
+                dyke_codes = (
+                    self.dockwidget.plainTextEdit_dyke_Codes.toPlainText()
+                    .replace(" ", "")
+                    .split(",")
                 )
-                if os.path.exists(new_path):
-                    random_5_digit_integer = random.randint(10000, 99999)
+                dyke_field = self.dockwidget.mFieldComboBox_dyke.currentText()
+                dyke_index = self.dockwidget.mFieldComboBox_dyke.currentIndex()
+                incScale = self.dockwidget.mQgsDoubleSpinBox_upinc.value()
+
+                if self.dockwidget.checkBox_series.isChecked():
+                    minScale = float(self.dockwidget.mQgsDoubleSpinBox_upinc.value())
+                    maxScale = float(self.dockwidget.lineEdit_polygon_area.text())
+                else:
+                    minScale = float(self.dockwidget.lineEdit_polygon_area.text())
+                    maxScale = float(self.dockwidget.lineEdit_polygon_area.text())
+
+                for upScale in np.arange(minScale, maxScale + 0.001, incScale):
+                    min_area_threshold = ((upScale / 2) ** 2) * np.pi
+                    parameter = str(upScale)
+                    crs = self.polygon_layer.crs()
+                    if crs.isGeographic():
+                        min_area_threshold = min_area_threshold / (110000 * 110000)
+                        distance_threshold = distance_threshold / 110000
+
+                    layer_path = os.path.dirname(self.polygon_layer.source())
                     new_path = (
                         layer_path
                         + "/"
-                        + self.polgyon_layer.name()
+                        + self.polygon_layer.name()
                         + "_min_area_"
                         + parameter
-                        + "_"
-                        + str(random_5_digit_integer)
                         + ".shp"
                     )
+                    if os.path.exists(new_path):
+                        random_5_digit_integer = random.randint(10000, 99999)
+                        new_path = (
+                            layer_path
+                            + "/"
+                            + self.polygon_layer.name()
+                            + "_min_area_"
+                            + parameter
+                            + "_"
+                            + str(random_5_digit_integer)
+                            + ".shp"
+                        )
 
-                # Convert QGIS layer to GeoPandas
-                if upScale == minScale:
-                    gdf = gpd.read_file(self.polgyon_layer.source())
+                    # Convert QGIS layer to GeoPandas if first in series
+                    if upScale == minScale:
+                        gdf = gpd.read_file(self.polygon_layer.source())
 
-                # Handle dykes special case
-                if dyke_index != 0:
-                    triangulator = PolygonTriangulator(
-                        gdf=gdf,
-                        id_column=dyke_field,
+                    # Handle dykes special case
+                    if dyke_index != 0:
+                        triangulator = PolygonTriangulator(
+                            gdf=gdf,
+                            id_column=dyke_field,
+                            min_area_threshold=min_area_threshold * 1000000.0,
+                            distance_threshold=distance_threshold,
+                            strat1=strat1,
+                            strat2=strat2,
+                            strat3=strat3,
+                            strat4=strat4,
+                            lithoname=lithoname,
+                        )
+                        gdf = triangulator.triangulate_polygons(target_ids=dyke_codes)
+
+                    # Create an instance of StructuralOrientationSubSampler
+                    polygonSubsampler = StructuralPolygonSubSampler(gdf)
+                    # Modified parameter order: stratigraphic fields come before lithological field
+                    output_gdf = polygonSubsampler.clean_small_polygons_and_holes_new(
+                        gdf,
                         min_area_threshold=min_area_threshold * 1000000.0,
                         distance_threshold=distance_threshold,
                         strat1=strat1,
@@ -513,44 +506,30 @@ class GeoSubSampler:
                         strat4=strat4,
                         lithoname=lithoname,
                     )
-                    gdf = triangulator.triangulate_polygons(target_ids=dyke_codes)
-                # Create an instance of StructuralOrientationSubSampler
-                polygonSubsampler = StructuralPolygonSubSampler(gdf)
-                # Modified parameter order: stratigraphic fields come before lithological field
-                output_gdf = polygonSubsampler.clean_small_polygons_and_holes_new(
-                    gdf,
-                    min_area_threshold=min_area_threshold * 1000000.0,
-                    distance_threshold=distance_threshold,
-                    strat1=strat1,
-                    strat2=strat2,
-                    strat3=strat3,
-                    strat4=strat4,
-                    lithoname=lithoname,
-                )
-                output_gdf.to_file(new_path, driver="ESRI Shapefile")
+                    output_gdf.to_file(new_path, driver="ESRI Shapefile")
 
-                # reload as layer
-                upscaled_layer = QgsVectorLayer(
-                    new_path,
-                    self.polgyon_layer.name() + "_min_area_" + parameter,
-                    "ogr",
-                )
-
-                # Check if layer is valid
-                if upscaled_layer.isValid():
-                    QgsProject.instance().addMapLayer(upscaled_layer)
-                else:
-                    print(
-                        "Failed to load layer", self.polgyon_layer.name() + "_min_area"
+                    # reload as layer
+                    upscaled_layer = QgsVectorLayer(
+                        new_path,
+                        self.polygon_layer.name() + "_min_area_" + parameter,
+                        "ogr",
                     )
 
-                QgsProject.instance().addMapLayer(upscaled_layer)
-        else:
-            self.iface.messageBar().pushMessage(
-                "Sorry, only layers saved to disk as a shapefile can be processed!",
-                level=Qgis.Warning,
-                duration=15,
-            )
+                    # Check if layer is valid
+                    if upscaled_layer.isValid():
+                        QgsProject.instance().addMapLayer(upscaled_layer)
+                    else:
+                        print(
+                            "Failed to load layer", self.polygon_layer.name() + "_min_area"
+                        )
+
+                    QgsProject.instance().addMapLayer(upscaled_layer)
+            else:
+                self.iface.messageBar().pushMessage(
+                    "Sorry, only layers saved to disk as a shapefile can be processed!",
+                    level=Qgis.Warning,
+                    duration=15,
+                )
 
     def mergeSegments(self):
         self.polyline_layer = (
@@ -746,9 +725,7 @@ class GeoSubSampler:
         self.dockwidget.lineEdit_grid_size_kent_2.setToolTip(
             "Threshold of points to remove ???"
         )
-        self.dockwidget.mMapLayerComboBox_points_polylines.setToolTip(
-            "Layer map polyline of strat contacts selected for processing"
-        )
+
         self.dockwidget.pushButton_1o_sampling.setToolTip(
             "First order retewntion of points based on distance and angle to contacts"
         )
@@ -859,9 +836,7 @@ class GeoSubSampler:
             self.dockwidget.mMapLayerComboBox_points.setFilters(
                 QgsMapLayerProxyModel.PointLayer
             )
-            self.dockwidget.mMapLayerComboBox_points_polylines.setFilters(
-                QgsMapLayerProxyModel.LineLayer
-            )
+
             self.dockwidget.mMapLayerComboBox_maps_polygons.setFilters(
                 QgsMapLayerProxyModel.PolygonLayer
             )
