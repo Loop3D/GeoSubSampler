@@ -289,13 +289,21 @@ class StructuralOrientationSubSampler:
         x = np.arange(minx, maxx, grid_size, dtype=np.int64)
         y = np.arange(miny, maxy, grid_size, dtype=np.int64)
 
+
+        # Extract x and y coordinates once
+        x_coords = df["geometry"].apply(lambda point: point.x)
+        y_coords = df["geometry"].apply(lambda point: point.y)
+
+
+        
         # Group by grid cells and average
         averaged_data = []
             
         for linex in x:
             for liney in y:
-                grid=df.loc[(df["Y"] >= int(liney)) & (df["Y"] <= int(liney+grid_size)) & 
-                            (df["X"] >= int(linex)) & (df["X"] <= int(linex+grid_size))]
+                # Use the extracted coordinates in your filter
+                grid = df.loc[(y_coords >= int(liney)) & (y_coords <= int(liney+grid_size)) & 
+                            (x_coords >= int(linex)) & (x_coords <= int(linex+grid_size))]
                 if grid.empty:
                     continue
                 else:
@@ -356,6 +364,11 @@ class StructuralOrientationSubSampler:
 
         df = self.calc_vector(self.gdf, self.dip_col, self.strike_col)
 
+
+        # Extract x and y coordinates once
+        x_coords = df["geometry"].apply(lambda point: point.x)
+        y_coords = df["geometry"].apply(lambda point: point.y)
+
             
         x = np.arange(minx, maxx, grid_size, dtype=np.int64)
         y = np.arange(miny, maxy, grid_size, dtype=np.int64)
@@ -365,8 +378,8 @@ class StructuralOrientationSubSampler:
             
         for linex in x:
             for liney in y:
-                grid=df.loc[(df["Y"] >= int(liney)) & (df["Y"] <= int(liney+grid_size)) & 
-                            (df["X"] >= int(linex)) & (df["X"] <= int(linex+grid_size))]
+                grid = df.loc[(y_coords >= int(liney)) & (y_coords <= int(liney+grid_size)) & 
+                            (x_coords >= int(linex)) & (x_coords <= int(linex+grid_size))]
                 if grid.empty:
                     continue
                 else:
@@ -482,7 +495,11 @@ class StructuralOrientationSubSampler:
 
 
         df = self.calc_vector(self.gdf, self.dip_col, self.strike_col)
-        print("calced  vector")
+
+        # Extract x and y coordinates once
+        x_coords = df["geometry"].apply(lambda point: point.x)
+        y_coords = df["geometry"].apply(lambda point: point.y)
+
             
         x = np.arange(minx, maxx, grid_size, dtype=np.int64)
         y = np.arange(miny, maxy, grid_size, dtype=np.int64)
@@ -492,8 +509,8 @@ class StructuralOrientationSubSampler:
             
         for linex in x:
             for liney in y:
-                grid=df.loc[(df["Y"] >= int(liney)) & (df["Y"] <= int(liney+grid_size)) & 
-                            (df["X"] >= int(linex)) & (df["X"] <= int(linex+grid_size))]
+                grid = df.loc[(y_coords >= int(liney)) & (y_coords <= int(liney+grid_size)) & 
+                            (x_coords >= int(linex)) & (x_coords <= int(linex+grid_size))]
                 centx=linex+(grid_size/2)
                 centy=liney+(grid_size/2)                
                 if grid.empty:
@@ -544,72 +561,7 @@ class StructuralOrientationSubSampler:
     def firstOrderSubsampling(self, contact_gdf: gpd.GeoDataFrame, 
                             distance_buffer: float = 500.0,
                             angle_tolerance: float = 15.0) -> gpd.GeoDataFrame:
-        """
-        Subsample based on proximity to geological contacts and orientation consistency.
-        
-        Parameters:
-        -----------
-        contact_gdf : gpd.GeoDataFrame
-            GeoDataFrame containing geological contact lines
-        distance_buffer : float
-            Distance buffer around contacts in map units (meters)
-        angle_tolerance : float
-            Angular tolerance for orientation consistency (degrees)
-            
-        Returns:
-        --------
-        gpd.GeoDataFrame
-            Subsampled GeoDataFrame with first-order measurements
-        """
-        if contact_gdf.empty:
-            warnings.warn("No contact data provided. Returning original data.")
-            return self.gdf.copy()
-        
-        # Create buffer around contacts
-        contact_buffer = contact_gdf.buffer(distance_buffer).unary_union
-        
-        # Find points within buffer
-        within_buffer = self.gdf[self.gdf.within(contact_buffer)]
-        
-        if within_buffer.empty:
-            warnings.warn("No points found within contact buffer.")
-            return gpd.GeoDataFrame(columns=self.gdf.columns, crs=self.gdf.crs)
-        
-        # Calculate contact orientations at point locations
-        filtered_points = []
-        
-        for idx, point in within_buffer.iterrows():
-            # Find nearest contact
-            distances = contact_gdf.distance(point.geometry)
-            nearest_contact_idx = distances.idxmin()
-            nearest_contact = contact_gdf.loc[nearest_contact_idx]
-            
-            # Calculate contact strike at nearest point
-            contact_strike = self._calculate_line_strike(nearest_contact.geometry, point.geometry)
-            
-            # Get point orientation
-            if hasattr(point, 'strike'):
-                point_strike = point.strike
-            else:
-                # Try to extract from vector
-                point_strike, _ = self._vector_to_strike_dip(point.vector)
-            
-            # Check angular difference
-            angular_diff = abs(contact_strike - point_strike)
-            angular_diff = min(angular_diff, 360 - angular_diff)  # Handle wrap-around
-            
-            if angular_diff <= angle_tolerance:
-                point_dict = point.to_dict()
-                point_dict['contact_strike'] = contact_strike
-                point_dict['angular_diff'] = angular_diff
-                filtered_points.append(point_dict)
-        
-        if not filtered_points:
-            warnings.warn("No points meet the orientation criteria.")
-            return gpd.GeoDataFrame(columns=self.gdf.columns, crs=self.gdf.crs)
-        
-        result_gdf = gpd.GeoDataFrame(filtered_points, crs=self.gdf.crs)
-        return result_gdf.reset_index(drop=True)
+        pass
     
     def _calculate_line_strike(self, line_geom, point_geom) -> float:
         """Calculate strike of line geometry at nearest point."""
