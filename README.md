@@ -9,6 +9,9 @@ GeoSubSampler is designed to help geologists and GIS professionals manage large 
 - Geological polygons (rock units, formations)
 - Fault and contact lines
 
+
+![GeoSubSampler image](GUI.png)
+
 ## Installation
 
 1. Download the plugin files
