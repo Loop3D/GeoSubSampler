@@ -770,9 +770,7 @@ class GeoSubSampler:
             "Increment for arithmetic series of maps"
         )
         self.dockwidget.pushButton_minPolyArea.setToolTip("Rescale map polygons")
-        self.dockwidget.mMapLayerComboBox_maps_polylines.setToolTip(
-            "Fault polyline layer selected for processing"
-        )
+
         self.dockwidget.mMapLayerComboBox_fault_polylines.setToolTip(
             "Fault polyline layer selected for processing"
         )
@@ -840,9 +838,7 @@ class GeoSubSampler:
             self.dockwidget.mMapLayerComboBox_maps_polygons.setFilters(
                 QgsMapLayerProxyModel.PolygonLayer
             )
-            self.dockwidget.mMapLayerComboBox_maps_polylines.setFilters(
-                QgsMapLayerProxyModel.LineLayer
-            )
+
             self.dockwidget.mMapLayerComboBox_fault_polylines.setFilters(
                 QgsMapLayerProxyModel.LineLayer
             )
