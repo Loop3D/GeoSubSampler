@@ -307,8 +307,11 @@ class StructuralOrientationSubSampler:
                 if grid.empty:
                     continue
                 else:
-                    centx=linex+(grid_size/2)
-                    centy=liney+(grid_size/2)
+                    # Get average coordinates of the filtered data
+                    centx = grid["geometry"].apply(lambda point: point.x).mean()
+                    centy = grid["geometry"].apply(lambda point: point.y).mean()
+                    #centx=linex+(grid_size/2)
+                    #centy=liney+(grid_size/2)
                     mean_vector =self.calc_mean_vector(grid)
                     dip=mean_vector[0]
                     strike=mean_vector[1]
@@ -383,8 +386,10 @@ class StructuralOrientationSubSampler:
                 if grid.empty:
                     continue
                 else:
-                    centx=linex+(grid_size/2)
-                    centy=liney+(grid_size/2)
+                    centx = grid["geometry"].apply(lambda point: point.x).mean()
+                    centy = grid["geometry"].apply(lambda point: point.y).mean()
+                    # centx=linex+(grid_size/2)
+                    # centy=liney+(grid_size/2)                    
                     dip2, dipdir2 =self.calc_mean_vector(grid)
                     count, kappa, beta=self.calc_kent(grid)
 
@@ -511,15 +516,15 @@ class StructuralOrientationSubSampler:
             for liney in y:
                 grid = df.loc[(y_coords >= int(liney)) & (y_coords <= int(liney+grid_size)) & 
                             (x_coords >= int(linex)) & (x_coords <= int(linex+grid_size))]
-                centx=linex+(grid_size/2)
-                centy=liney+(grid_size/2)                
+                #centx=linex+(grid_size/2)
+                #centy=liney+(grid_size/2)                
                 if grid.empty:
                     continue
                 elif len(grid) <3:
 
 
-                    centx=linex+(grid_size/2)
-                    centy=liney+(grid_size/2)
+                    centx = grid["geometry"].apply(lambda point: point.x).mean()
+                    centy = grid["geometry"].apply(lambda point: point.y).mean()
                     dip_final, dipdir_final =self.calc_mean_vector(grid)
                     count, kappa, beta=self.calc_kent(grid)
                     removed_idx=-1                        
@@ -536,6 +541,12 @@ class StructuralOrientationSubSampler:
 
                     removed_idx, max_delta = max(delta_kappas, key=lambda x: x[1])
                     final_grid = grid.drop(index=removed_idx)
+                    centx = final_grid["geometry"].apply(lambda point: point.x).mean()
+                    centy = final_grid["geometry"].apply(lambda point: point.y).mean()
+                    
+                    #centx=linex+(grid_size/2)
+                    #centy=liney+(grid_size/2)
+
                     dip_final, dipdir_final = self.calc_mean_vector(final_grid)
                     count, kappa, beta = self.calc_kent(final_grid)
 
