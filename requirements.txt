@@ -1,0 +1,10 @@
+onecode>=1,<2
+geopandas
+numpy
+scipy
+shapely
+networkx
+rtee
+matplotlib
+pandas
+triangle
