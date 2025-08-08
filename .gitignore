@@ -134,7 +134,6 @@ dmypy.json
 !data/parameters.json
 
 # output-like file
-*.zip
 *.csv
 *.gz
 *.whl
