@@ -179,7 +179,7 @@ class InputParameters:
 
         self.dykeField = text_input(
             key="dykeField",
-            value="CODE",
+            value=target_ids,
             label="Dyke Field Name",
             max_chars=30,
             placeholder="Choose a dyke property field name from your geology polygon file ",
