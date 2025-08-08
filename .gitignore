@@ -129,7 +129,7 @@ dmypy.json
 .idea/
 
 # I/O folders
-data/*
+
 !data/README.md
 !data/parameters.json
 
