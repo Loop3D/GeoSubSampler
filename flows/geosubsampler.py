@@ -134,14 +134,59 @@ class InputParameters:
 
         self.priority1Field = text_input(
             key="priority1Field",
+            value="UNITNAME",
+            label="Polygon Priority 1 Field Name",
+            max_chars=30,
+            placeholder="Choose a field name from your geology polygon file ",
         )
 
-        self.faultMinLength = number_input(
-            key="faultMinLength",
-            value=10,
-            label="Min Length (km)",
-            min=0.1,
-            max=1000,
+        self.priority2Field = text_input(
+            key="priority2Field",
+            value="GROUP_",
+            label="Polygon Priority 2 Field Name",
+            max_chars=30,
+            placeholder="Choose a field name from your geology polygon file ",
+        )
+
+        self.priority3Field = text_input(
+            key="priority3Field",
+            value="SUPERGROUP",
+            label="Polygon Priority 3 Field Name",
+            max_chars=30,
+            placeholder="Choose a field name from your geology polygon file ",
+        )
+
+        self.priority4Field = text_input(
+            key="priority4Field",
+            value="CRATON",
+            label="Polygon Priority 4 Field Name",
+            max_chars=30,
+            placeholder="Choose a field name from your geology polygon file ",
+        )
+
+        self.priority5Field = text_input(
+            key="priority5Field",
+            value="OROGEN",
+            label="Polygon Priority 5  Field Name",
+            max_chars=30,
+            placeholder="Choose a field name from your geology polygon file ",
+        )
+
+        self.do_dykes = checkbox(
+            key="do_dykes", value=True, label="Handle dyke polygons separately"
+        )
+        target_ids = "P_-_wx-o, P_-_wz-ow, P_-_wz-om, P_-_ww-o, P_-_wz-og, P_-_wt-o"
+
+        self.dykeField = text_input(
+            key="dykeField",
+            value="CODE",
+            label="Dyke Field Name",
+            max_chars=30,
+            placeholder="Choose a dyke property field name from your geology polygon file ",
+        )
+
+        self.dykeCodes = text_input(
+            key="dykeCodes",
             value=target_ids,
             label="Polygon Priority 5",
             max_chars=30,
