@@ -49,16 +49,15 @@ class InputParameters:
 
         self.structures_input_path = file_input(
             key="my_structures",
-            value="uploads/structure_points.shp",
+            value="uploads/structure_points.zip",
             label="Select an point shapefile",
-            types=[("Shapefiles", ".shp .SHP")],
+            types=[("Shapefiles", ".zip .ZIP")],
             make_path=True,  # will create the uploads folder if doesn't exist)
         )
 
         self.structures_output_path = file_output(
             key="structures_output_path",
             value="output/structures_SubSampled.shp",
-            label="Output path",
             make_path=True,  # will create the output folder if doesn't exist
         )
 
@@ -68,16 +67,15 @@ class InputParameters:
 
         self.faults_input_path = file_input(
             key="my_faults",
-            value="uploads/faults_polylines.shp",
+            value="uploads/faults_polylines.zip",
             label="Select an polyline shapefile",
-            types=[("Shapefiles", ".shp .SHP")],
+            types=[("Shapefiles", ".zip .ZIP")],
             make_path=True,  # will create the uploads folder if doesn't exist)
         )
 
         self.faults_output_path = file_output(
             key="faults_output_path",
             value="output/faults_SubSampled.shp",
-            label="Output path",
             make_path=True,  # will create the output folder if doesn't exist
         )
 
@@ -87,16 +85,15 @@ class InputParameters:
 
         self.geology_input_path = file_input(
             key="my_geology",
-            value="uploads/geology_polygons.shp",
+            value="uploads/geology_polygons.zip",
             label="Select an polygon shapefile",
-            types=[("Shapefiles", ".shp .SHP")],
+            types=[("Shapefiles", ".zip .ZIP")],
             make_path=True,  # will create the uploads folder if doesn't exist)
         )
 
         self.geology_output_path = file_output(
             key="geology_output_path",
             value="output/geology_SubSampled.shp",
-            label="Output path",
             make_path=True,  # will create the output folder if doesn't exist
         )
 
