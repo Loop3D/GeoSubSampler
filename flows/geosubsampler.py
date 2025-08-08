@@ -44,14 +44,14 @@ class InputParameters:
         #
 
         self.do_points = checkbox(
-            key="do_points", value=True, label="Sturcture Points SubSampling"
+            key="do_points", value=True, label="Structure Points SubSampling"
         )
 
         self.structures_input_path = file_input(
             key="my_structures",
             value="uploads/structure_points.shp",
             label="Select an point shapefile",
-            types=[("Shapefiles", ".ers .ERS")],
+            types=[("Shapefiles", ".shp .SHP")],
             make_path=True,  # will create the uploads folder if doesn't exist)
         )
 
@@ -102,25 +102,25 @@ class InputParameters:
 
         self.pointGridSize = number_input(
             key="pointGridSize",
-            value=10000,
-            label="GridSize (m)",
-            min=1,
-            max=100000,
+            value=10,
+            label="GridSize (km)",
+            min=0.1,
+            max=1000,
         )
 
         self.faultMinLength = number_input(
             key="faultMinLength",
-            value=10000,
-            label="Min Length (m)",
-            min=1,
-            max=100000,
+            value=10,
+            label="Min Length (km)",
+            min=0.1,
+            max=1000,
         )
 
         self.geologyMinDiam = number_input(
             key="geologyMinDiam",
             value=50,
             label="Min Diam (km)",
-            min=1,
+            min=0.1,
             max=1000,
         )
 
@@ -184,7 +184,7 @@ def run_subsampler(Par):
         sampler = StructuralOrientationSubSampler(
             gdf, dip_col="Strike", strike_col="Dip", dip_convention="strike"
         )
-        sampled = sampler.gridCellAveraging(grid_size=Par.pointGridSize)
+        sampled = sampler.gridCellAveraging(grid_size=Par.pointGridSize * 1000)
         sampled.to_file(Par.structures_output_path)
         plot_results(gdf, Par.filePointsOrig, "red", gtype="points", title="Original")
         plot_results(
@@ -194,7 +194,7 @@ def run_subsampler(Par):
     if Par.do_faults:
         Logger.info("Running FaultLineMerger...")
         gdf = gpd.read_file(Par.faults_input_path)
-        sampler = subsampleFaults(Par.faultMinLength)
+        sampler = subsampleFaults(Par.faultMinLength * 1000)
         sampled = sampler.filter_geodataframe(gdf)
         sampled.to_file(Par.faults_output_path)
         plot_results(gdf, Par.fileFaultsOrig, "black", gtype="faults", title="Original")
