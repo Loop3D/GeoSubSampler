@@ -175,11 +175,10 @@ class InputParameters:
         self.do_dykes = checkbox(
             key="do_dykes", value=True, label="Handle dyke polygons separately"
         )
-        target_ids = "P_-_wx-o, P_-_wz-ow, P_-_wz-om, P_-_ww-o, P_-_wz-og, P_-_wt-o"
 
         self.dykeField = text_input(
             key="dykeField",
-            value=target_ids,
+            value="CODE",
             label="Dyke Field Name",
             max_chars=30,
             placeholder="Choose a dyke property field name from your geology polygon file ",
@@ -187,9 +186,9 @@ class InputParameters:
 
         self.dykeCodes = text_input(
             key="dykeCodes",
-            value=target_ids,
-            label="Polygon Priority 5",
-            max_chars=30,
+            value="P_-_wx-o, P_-_wz-ow, P_-_wz-om, P_-_ww-o, P_-_wz-og, P_-_wt-o",
+            label="Codes in chosen field that identify dykes",
+            max_chars=200,
             placeholder="Comma separated list of dyke codes",
         )
 
