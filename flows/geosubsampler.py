@@ -7,7 +7,6 @@
 # Remember: everything is gonna be ok in the end: if it's not ok, it's not the end.
 # Alternatively, ask for help at https://github.com/deeplime-io/onecode/issues
 
-import onecode
 from onecode import Logger, file_input, file_output, checkbox, number_input, text_input
 from .calcs.StructuralOrientationSubSampler import StructuralOrientationSubSampler
 from .calcs.StructuralPolygonSubSampler import StructuralPolygonSubSampler
@@ -16,9 +15,7 @@ from .calcs.FaultLineMerger import FaultLineMerger
 from .calcs.subsampleFaults import subsampleFaults
 import geopandas as gpd
 import matplotlib.pyplot as plt
-import numpy as np
 import zipfile
-import os
 import tempfile
 from pathlib import Path
 
@@ -200,6 +197,14 @@ class InputParameters:
             max=1000,
         )
 
+        self.distance_threshold = number_input(
+            key="distance_threshold",
+            value=1,
+            label="Geology Polygon node mismatch tolerance (projection units)",
+            min=0.01,
+            max=100000,
+        )
+
         self.filePointsOrig = file_output(
             key="filePointsOrig",
             value="output/filePointsOrig.png",
@@ -246,82 +251,6 @@ class InputParameters:
 
 def read_input_parameters():
     return InputParameters()
-
-
-def run_subsampler(Par):
-    """
-    Run the subsampling process based on the input parameters.
-    """
-
-    if Par.do_points:
-        Logger.info("Running StructuralOrientationSubSampler...")
-        gdf = gpd.read_file(Par.structures_input_path)
-        sampler = StructuralOrientationSubSampler(
-            gdf, dip_col="Strike", strike_col="Dip", dip_convention="strike"
-        )
-        sampled = sampler.gridCellAveraging(grid_size=Par.pointGridSize * 1000)
-        # sampled.to_file(Par.structures_output_path)
-        write_zipped_shapefile(
-            sampled, Par.structures_output_path, layer_name="structures_SubSampled"
-        )
-        plot_results(gdf, Par.filePointsOrig, "red", gtype="points", title="Original")
-        plot_results(
-            sampled, Par.filePointsSub, "red", gtype="points", title="Subsampled"
-        )
-
-    if Par.do_faults:
-        Logger.info("Running FaultLineMerger...")
-        gdf = gpd.read_file(Par.faults_input_path)
-        sampler = subsampleFaults(Par.faultMinLength * 1000)
-        sampled = sampler.filter_geodataframe(gdf)
-        # sampled.to_file(Par.faults_output_path)
-        write_zipped_shapefile(
-            sampled, Par.faults_output_path, layer_name="faults_SubSampled"
-        )
-        plot_results(gdf, Par.fileFaultsOrig, "black", gtype="faults", title="Original")
-        plot_results(
-            sampled, Par.fileFaultsSub, "black", gtype="faults", title="Subsampled"
-        )
-
-    if Par.do_geology:
-        Logger.info("Running StructuralPolygonSubSampler...")
-        gdf = gpd.read_file(Par.geology_input_path)
-
-        triangulator = PolygonTriangulator(
-            gdf=gdf,
-            id_column=Par.dykeField,
-            min_area_threshold=Par.geologyMinDiam * 1000000.0,
-            distance_threshold=1,
-            strat1=Par.priority1Field,
-            strat2=Par.priority2Field,
-            strat3=Par.priority3Field,
-            strat4=Par.priority4Field,
-            lithoname=Par.priority5Field,
-        )
-        target_ids = Par.dykeCodes.replace(" ", "").split(",")
-        dyked = triangulator.triangulate_polygons(target_ids=target_ids)
-
-        sampler = StructuralPolygonSubSampler(dyked)
-        sampled = sampler.clean_small_polygons_and_holes_new(
-            dyked,
-            min_area_threshold=Par.geologyMinDiam * 1000000.0,
-            distance_threshold=1,
-            strat1=Par.priority1Field,
-            strat2=Par.priority2Field,
-            strat3=Par.priority3Field,
-            strat4=Par.priority4Field,
-            lithoname=Par.priority5Field,
-        )
-        # sampled.to_file(Par.geology_output_path)
-        plot_results(
-            gdf, Par.fileGeologyOrig, "gray", gtype="geology", title="Original"
-        )
-        write_zipped_shapefile(
-            sampled, Par.geology_output_path, layer_name="geology_SubSampled"
-        )
-        plot_results(
-            sampled, Par.fileGeologySub, "gray", gtype="geology", title="Subsampled"
-        )
 
 
 def plot_results(gdf, path, color, gtype, title="Subsampled"):
@@ -374,3 +303,98 @@ def write_zipped_shapefile(gdf, output_zip_path, layer_name="data"):
 
         print(f"Zipped shapefile created: {output_zip_path}")
         print(f"Files included: {[f.name for f in shapefile_files]}")
+
+
+def checkUnits(gdf, length=1):
+    crs = gdf.crs
+    is_geographic = crs.is_geographic if hasattr(crs, "is_geographic") else False
+
+    if is_geographic:
+        lengthScale = length * 110000
+    else:
+        lengthScale = length
+    return lengthScale
+
+
+def run_subsampler(Par):
+    """
+    Run the subsampling process based on the input parameters.
+    """
+
+    if Par.do_points:
+        Logger.info("Running StructuralOrientationSubSampler...")
+        gdf = gpd.read_file(Par.structures_input_path)
+        sampler = StructuralOrientationSubSampler(
+            gdf, dip_col="Strike", strike_col="Dip", dip_convention="strike"
+        )
+
+        pointGridSize = checkUnits(gdf, Par.pointGridSize)
+
+        sampled = sampler.gridCellAveraging(grid_size=pointGridSize * 1000)
+
+        write_zipped_shapefile(
+            sampled, Par.structures_output_path, layer_name="structures_SubSampled"
+        )
+        plot_results(gdf, Par.filePointsOrig, "red", gtype="points", title="Original")
+        plot_results(
+            sampled, Par.filePointsSub, "red", gtype="points", title="Subsampled"
+        )
+
+    if Par.do_faults:
+        Logger.info("Running FaultLineMerger...")
+        gdf = gpd.read_file(Par.faults_input_path)
+
+        faultMinLength = checkUnits(gdf, Par.faultMinLength)
+
+        sampler = subsampleFaults(faultMinLength * 1000)
+        sampled = sampler.filter_geodataframe(gdf)
+
+        write_zipped_shapefile(
+            sampled, Par.faults_output_path, layer_name="faults_SubSampled"
+        )
+        plot_results(gdf, Par.fileFaultsOrig, "black", gtype="faults", title="Original")
+        plot_results(
+            sampled, Par.fileFaultsSub, "black", gtype="faults", title="Subsampled"
+        )
+
+    if Par.do_geology:
+        Logger.info("Running StructuralPolygonSubSampler...")
+        gdf = gpd.read_file(Par.geology_input_path)
+
+        geologyMinDiam = checkUnits(gdf, Par.geologyMinDiam)
+
+        triangulator = PolygonTriangulator(
+            gdf=gdf,
+            id_column=Par.dykeField,
+            min_area_threshold=geologyMinDiam * 1000000.0,
+            distance_threshold=Par.distance_threshold,
+            strat1=Par.priority1Field,
+            strat2=Par.priority2Field,
+            strat3=Par.priority3Field,
+            strat4=Par.priority4Field,
+            lithoname=Par.priority5Field,
+        )
+        target_ids = Par.dykeCodes.replace(" ", "").split(",")
+        dyked = triangulator.triangulate_polygons(target_ids=target_ids)
+
+        sampler = StructuralPolygonSubSampler(dyked)
+        sampled = sampler.clean_small_polygons_and_holes_new(
+            dyked,
+            min_area_threshold=geologyMinDiam * 1000000.0,
+            distance_threshold=Par.distance_threshold,
+            strat1=Par.priority1Field,
+            strat2=Par.priority2Field,
+            strat3=Par.priority3Field,
+            strat4=Par.priority4Field,
+            lithoname=Par.priority5Field,
+        )
+
+        plot_results(
+            gdf, Par.fileGeologyOrig, "gray", gtype="geology", title="Original"
+        )
+        write_zipped_shapefile(
+            sampled, Par.geology_output_path, layer_name="geology_SubSampled"
+        )
+        plot_results(
+            sampled, Par.fileGeologySub, "gray", gtype="geology", title="Subsampled"
+        )
