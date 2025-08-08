@@ -104,7 +104,6 @@ class InputParameters:
             key="pointGridSize",
             value=10000,
             label="GridSize (m)",
-            type=int,
             min=1,
             max=100000,
         )
@@ -113,7 +112,6 @@ class InputParameters:
             key="faultMinLength",
             value=10000,
             label="Min Length (m)",
-            type=int,
             min=1,
             max=100000,
         )
@@ -122,7 +120,6 @@ class InputParameters:
             key="geologyMinDiam",
             value=50,
             label="Min Diam (km)",
-            type=int,
             min=1,
             max=1000,
         )
@@ -209,9 +206,30 @@ def run_subsampler(Par):
         Logger.info("Running StructuralPolygonSubSampler...")
         gdf = gpd.read_file(Par.geology_input_path)
 
-        sampler = StructuralPolygonSubSampler(gdf)
+        triangulator = PolygonTriangulator(
+            gdf=gdf,
+            id_column="CODE",
+            min_area_threshold=Par.geologyMinDiam * 1000000.0,
+            distance_threshold=1,
+            strat1="UNITNAME",
+            strat2="GROUP_",
+            strat3="SUPERGROUP",
+            strat4="CRATON",
+            lithoname="OROGEN",
+        )
+        target_ids = [
+            "P_-_wx-o",
+            "P_-_wz-ow",
+            "P_-_wz-om",
+            "P_-_ww-o",
+            "P_-_wz-og",
+            "P_-_wt-o",
+        ]
+        dyked = triangulator.triangulate_polygons(target_ids=target_ids)
+
+        sampler = StructuralPolygonSubSampler(dyked)
         sampled = sampler.clean_small_polygons_and_holes_new(
-            gdf,
+            dyked,
             min_area_threshold=Par.geologyMinDiam * 1000000.0,
             distance_threshold=1,
             strat1="UNITNAME",
