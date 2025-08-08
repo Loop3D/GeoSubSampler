@@ -208,42 +208,42 @@ class InputParameters:
         self.filePointsOrig = file_output(
             key="filePointsOrig",
             value="output/filePointsOrig.png",
-            label="filePointsOrig",
+            label="PointsOrig",
             tags=["png"],
             make_path=True,
         )
         self.filePointsSub = file_output(
             key="filePointsSub",
             value="output/filePointsSub.png",
-            label="filePointsSub",
+            label="PointsSub",
             tags=["png"],
             make_path=True,
         )
         self.fileFaultsOrig = file_output(
             key="fileFaultsOrig",
             value="output/fileFaultsOrig.png",
-            label="fileFaultsOrig",
+            label="FaultsOrig",
             tags=["png"],
             make_path=True,
         )
         self.fileFaultsSub = file_output(
             key="fileFaultsSub",
             value="output/fileFaultsSub.png",
-            label="fileFaultsSub",
+            label="FaultsSub",
             tags=["png"],
             make_path=True,
         )
         self.fileGeologyOrig = file_output(
             key="fileGeologyOrig",
             value="output/fileGeologyOrig.png",
-            label="fileGeologyOrig",
+            label="GeologyOrig",
             tags=["png"],
             make_path=True,
         )
         self.fileGeologySub = file_output(
             key="fileGeologySub",
             value="output/fileGeologySub.png",
-            label="fileGeologySub",
+            label="GeologySub",
             tags=["png"],
             make_path=True,
         )
