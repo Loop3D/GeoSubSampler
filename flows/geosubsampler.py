@@ -17,6 +17,10 @@ from .calcs.subsampleFaults import subsampleFaults
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
+import zipfile
+import os
+import tempfile
+from pathlib import Path
 
 
 def run():
@@ -50,14 +54,14 @@ class InputParameters:
         self.structures_input_path = file_input(
             key="my_structures",
             value="uploads/structure_points.zip",
-            label="Select an point shapefile",
+            label="Select a zipped point shapefile",
             types=[("Shapefiles", ".zip .ZIP")],
             make_path=True,  # will create the uploads folder if doesn't exist)
         )
 
         self.structures_output_path = file_output(
             key="structures_output_path",
-            value="output/structures_SubSampled.shp",
+            value="output/structures_SubSampled.zip",
             make_path=True,  # will create the output folder if doesn't exist
         )
 
@@ -68,14 +72,14 @@ class InputParameters:
         self.faults_input_path = file_input(
             key="my_faults",
             value="uploads/faults_polylines.zip",
-            label="Select an polyline shapefile",
+            label="Select a zipped polyline shapefile",
             types=[("Shapefiles", ".zip .ZIP")],
             make_path=True,  # will create the uploads folder if doesn't exist)
         )
 
         self.faults_output_path = file_output(
             key="faults_output_path",
-            value="output/faults_SubSampled.shp",
+            value="output/faults_SubSampled.zip",
             make_path=True,  # will create the output folder if doesn't exist
         )
 
@@ -86,14 +90,14 @@ class InputParameters:
         self.geology_input_path = file_input(
             key="my_geology",
             value="uploads/geology_polygons.zip",
-            label="Select an polygon shapefile",
+            label="Select a zipped polygon shapefile",
             types=[("Shapefiles", ".zip .ZIP")],
             make_path=True,  # will create the uploads folder if doesn't exist)
         )
 
         self.geology_output_path = file_output(
             key="geology_output_path",
-            value="output/geology_SubSampled.shp",
+            value="output/geology_SubSampled.zip",
             make_path=True,  # will create the output folder if doesn't exist
         )
 
@@ -182,7 +186,10 @@ def run_subsampler(Par):
             gdf, dip_col="Strike", strike_col="Dip", dip_convention="strike"
         )
         sampled = sampler.gridCellAveraging(grid_size=Par.pointGridSize * 1000)
-        sampled.to_file(Par.structures_output_path)
+        # sampled.to_file(Par.structures_output_path)
+        write_zipped_shapefile(
+            sampled, Par.structures_output_path, layer_name="structures_SubSampled"
+        )
         plot_results(gdf, Par.filePointsOrig, "red", gtype="points", title="Original")
         plot_results(
             sampled, Par.filePointsSub, "red", gtype="points", title="Subsampled"
@@ -193,7 +200,10 @@ def run_subsampler(Par):
         gdf = gpd.read_file(Par.faults_input_path)
         sampler = subsampleFaults(Par.faultMinLength * 1000)
         sampled = sampler.filter_geodataframe(gdf)
-        sampled.to_file(Par.faults_output_path)
+        # sampled.to_file(Par.faults_output_path)
+        write_zipped_shapefile(
+            sampled, Par.faults_output_path, layer_name="faults_SubSampled"
+        )
         plot_results(gdf, Par.fileFaultsOrig, "black", gtype="faults", title="Original")
         plot_results(
             sampled, Par.fileFaultsSub, "black", gtype="faults", title="Subsampled"
@@ -235,9 +245,12 @@ def run_subsampler(Par):
             strat4="CRATON",
             lithoname="OROGEN",
         )
-        sampled.to_file(Par.geology_output_path)
+        # sampled.to_file(Par.geology_output_path)
         plot_results(
             gdf, Par.fileGeologyOrig, "gray", gtype="geology", title="Original"
+        )
+        write_zipped_shapefile(
+            sampled, Par.geology_output_path, layer_name="geology_SubSampled"
         )
         plot_results(
             sampled, Par.fileGeologySub, "gray", gtype="geology", title="Subsampled"
@@ -263,3 +276,34 @@ def plot_results(gdf, path, color, gtype, title="Subsampled"):
 
     ax.set_title(f"{title} {gtype}")
     plt.savefig(path)
+
+
+def write_zipped_shapefile(gdf, output_zip_path, layer_name="data"):
+    """
+    Write a GeoDataFrame to a zipped shapefile with all associated files
+
+    Parameters:
+    gdf (GeoDataFrame): The geodataframe to write
+    output_zip_path (str): Path for the output zip file
+    layer_name (str): Name for the shapefile (default: "data")
+    """
+
+    # Create a temporary directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        shapefile_path = temp_path / f"{layer_name}.shp"
+
+        # Write the shapefile to temporary directory
+        gdf.to_file(shapefile_path, driver="ESRI Shapefile")
+
+        # Get all shapefile-related files
+        shapefile_files = list(temp_path.glob(f"{layer_name}.*"))
+
+        # Create the zip file
+        with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in shapefile_files:
+                # Add each file to zip with just the filename (no path)
+                zipf.write(file_path, file_path.name)
+
+        print(f"Zipped shapefile created: {output_zip_path}")
+        print(f"Files included: {[f.name for f in shapefile_files]}")
