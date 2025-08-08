@@ -252,7 +252,6 @@ def run_subsampler(Par):
     """
     Run the subsampling process based on the input parameters.
     """
-    Logger.info(f"Par: {Par.geology_input_path}")
 
     if Par.do_points:
         Logger.info("Running StructuralOrientationSubSampler...")
