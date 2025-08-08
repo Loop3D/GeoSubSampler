@@ -8,7 +8,7 @@
 # Alternatively, ask for help at https://github.com/deeplime-io/onecode/issues
 
 import onecode
-from onecode import Logger, file_input, file_output, checkbox, number_input
+from onecode import Logger, file_input, file_output, checkbox, number_input, text_input
 from .calcs.StructuralOrientationSubSampler import StructuralOrientationSubSampler
 from .calcs.StructuralPolygonSubSampler import StructuralPolygonSubSampler
 from .calcs.PolygonTriangulator import PolygonTriangulator
@@ -65,6 +65,30 @@ class InputParameters:
             make_path=True,  # will create the output folder if doesn't exist
         )
 
+        self.dipField = text_input(
+            key="dipField",
+            value="Dip",
+            label="Dip info Field Name",
+            max_chars=30,
+            placeholder="Choose a field name from your structure point file ",
+        )
+
+        self.dipDirField = text_input(
+            key="dipDirField",
+            value="Strike",
+            label="Dip Direction or Strike Field Name",
+            max_chars=30,
+            placeholder="Choose a field name from your structure point file ",
+        )
+
+        self.pointGridSize = number_input(
+            key="pointGridSize",
+            value=10,
+            label="Orientations GridSize (km)",
+            min=0.1,
+            max=1000,
+        )
+
         self.do_faults = checkbox(
             key="do_faults", value=True, label="Faults Polyline SubSampling"
         )
@@ -83,6 +107,13 @@ class InputParameters:
             make_path=True,  # will create the output folder if doesn't exist
         )
 
+        self.faultMinLength = number_input(
+            key="faultMinLength",
+            value=10,
+            label="Fault Min Length (km)",
+            min=0.1,
+            max=1000,
+        )
         self.do_geology = checkbox(
             key="do_geology", value=True, label="Geology Polygon SubSampling"
         )
@@ -101,12 +132,8 @@ class InputParameters:
             make_path=True,  # will create the output folder if doesn't exist
         )
 
-        self.pointGridSize = number_input(
-            key="pointGridSize",
-            value=10,
-            label="GridSize (km)",
-            min=0.1,
-            max=1000,
+        self.priority1Field = text_input(
+            key="priority1Field",
         )
 
         self.faultMinLength = number_input(
@@ -115,12 +142,16 @@ class InputParameters:
             label="Min Length (km)",
             min=0.1,
             max=1000,
+            value=target_ids,
+            label="Polygon Priority 5",
+            max_chars=30,
+            placeholder="Comma separated list of dyke codes",
         )
 
         self.geologyMinDiam = number_input(
             key="geologyMinDiam",
             value=50,
-            label="Min Diam (km)",
+            label="Geology Polygon Min Diam (km)",
             min=0.1,
             max=1000,
         )
@@ -215,23 +246,16 @@ def run_subsampler(Par):
 
         triangulator = PolygonTriangulator(
             gdf=gdf,
-            id_column="CODE",
+            id_column=Par.dykeField,
             min_area_threshold=Par.geologyMinDiam * 1000000.0,
             distance_threshold=1,
-            strat1="UNITNAME",
-            strat2="GROUP_",
-            strat3="SUPERGROUP",
-            strat4="CRATON",
-            lithoname="OROGEN",
+            strat1=Par.priority1Field,
+            strat2=Par.priority2Field,
+            strat3=Par.priority3Field,
+            strat4=Par.priority4Field,
+            lithoname=Par.priority5Field,
         )
-        target_ids = [
-            "P_-_wx-o",
-            "P_-_wz-ow",
-            "P_-_wz-om",
-            "P_-_ww-o",
-            "P_-_wz-og",
-            "P_-_wt-o",
-        ]
+        target_ids = Par.dykeCodes.replace(" ", "").split(",")
         dyked = triangulator.triangulate_polygons(target_ids=target_ids)
 
         sampler = StructuralPolygonSubSampler(dyked)
@@ -239,11 +263,11 @@ def run_subsampler(Par):
             dyked,
             min_area_threshold=Par.geologyMinDiam * 1000000.0,
             distance_threshold=1,
-            strat1="UNITNAME",
-            strat2="GROUP_",
-            strat3="SUPERGROUP",
-            strat4="CRATON",
-            lithoname="OROGEN",
+            strat1=Par.priority1Field,
+            strat2=Par.priority2Field,
+            strat3=Par.priority3Field,
+            strat4=Par.priority4Field,
+            lithoname=Par.priority5Field,
         )
         # sampled.to_file(Par.geology_output_path)
         plot_results(
