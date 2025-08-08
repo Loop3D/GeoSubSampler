@@ -1,4 +1,3 @@
-
 # This file is your entry point:
 # - add you Python files and folder inside this 'flows' folder
 # - add your imports
@@ -9,14 +8,243 @@
 # Alternatively, ask for help at https://github.com/deeplime-io/onecode/issues
 
 import onecode
+from onecode import Logger, file_input, file_output, checkbox, number_input
+from .calcs.StructuralOrientationSubSampler import StructuralOrientationSubSampler
+from .calcs.StructuralPolygonSubSampler import StructuralPolygonSubSampler
+from .calcs.PolygonTriangulator import PolygonTriangulator
+from .calcs.FaultLineMerger import FaultLineMerger
+from .calcs.subsampleFaults import subsampleFaults
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def run():
-    onecode.Logger.info(
+    Logger.info(
         """
         #####################################################################
         ###> Hello from GeoSubSampler!
-        ###> Fill in this run() function with something awesome!
         #####################################################################
         """
     )
+
+    Par = read_input_parameters()
+    run_subsampler(Par)
+
+
+class InputParameters:
+    """
+    A class to contains all input parameters.
+    """
+
+    def __init__(self):
+        # -------------------------------
+        # Section 'FilePaths'.
+        # -------------------------------
+        #
+
+        self.do_points = checkbox(
+            key="do_points", value=True, label="Sturcture Points SubSampling"
+        )
+
+        self.structures_input_path = file_input(
+            key="my_structures",
+            value="uploads/structure_points.shp",
+            label="Select an point shapefile",
+            types=[("Shapefiles", ".ers .ERS")],
+            make_path=True,  # will create the uploads folder if doesn't exist)
+        )
+
+        self.structures_output_path = file_output(
+            key="structures_output_path",
+            value="output/structures_SubSampled.shp",
+            label="Output path",
+            make_path=True,  # will create the output folder if doesn't exist
+        )
+
+        self.do_faults = checkbox(
+            key="do_faults", value=True, label="Faults Polyline SubSampling"
+        )
+
+        self.faults_input_path = file_input(
+            key="my_faults",
+            value="uploads/faults_polylines.shp",
+            label="Select an polyline shapefile",
+            types=[("Shapefiles", ".shp .SHP")],
+            make_path=True,  # will create the uploads folder if doesn't exist)
+        )
+
+        self.faults_output_path = file_output(
+            key="faults_output_path",
+            value="output/faults_SubSampled.shp",
+            label="Output path",
+            make_path=True,  # will create the output folder if doesn't exist
+        )
+
+        self.do_geology = checkbox(
+            key="do_geology", value=True, label="Geology Polygon SubSampling"
+        )
+
+        self.geology_input_path = file_input(
+            key="my_geology",
+            value="uploads/geology_polygons.shp",
+            label="Select an polygon shapefile",
+            types=[("Shapefiles", ".shp .SHP")],
+            make_path=True,  # will create the uploads folder if doesn't exist)
+        )
+
+        self.geology_output_path = file_output(
+            key="geology_output_path",
+            value="output/geology_SubSampled.shp",
+            label="Output path",
+            make_path=True,  # will create the output folder if doesn't exist
+        )
+
+        self.pointGridSize = number_input(
+            key="pointGridSize",
+            value=10000,
+            label="GridSize (m)",
+            type=int,
+            min=1,
+            max=100000,
+        )
+
+        self.faultMinLength = number_input(
+            key="faultMinLength",
+            value=10000,
+            label="Min Length (m)",
+            type=int,
+            min=1,
+            max=100000,
+        )
+
+        self.geologyMinDiam = number_input(
+            key="geologyMinDiam",
+            value=50,
+            label="Min Diam (km)",
+            type=int,
+            min=1,
+            max=1000,
+        )
+
+        self.filePointsOrig = file_output(
+            key="filePointsOrig",
+            value="output/filePointsOrig.png",
+            label="filePointsOrig",
+            tags=["png"],
+            make_path=True,
+        )
+        self.filePointsSub = file_output(
+            key="filePointsSub",
+            value="output/filePointsSub.png",
+            label="filePointsSub",
+            tags=["png"],
+            make_path=True,
+        )
+        self.fileFaultsOrig = file_output(
+            key="fileFaultsOrig",
+            value="output/fileFaultsOrig.png",
+            label="fileFaultsOrig",
+            tags=["png"],
+            make_path=True,
+        )
+        self.fileFaultsSub = file_output(
+            key="fileFaultsSub",
+            value="output/fileFaultsSub.png",
+            label="fileFaultsSub",
+            tags=["png"],
+            make_path=True,
+        )
+        self.fileGeologyOrig = file_output(
+            key="fileGeologyOrig",
+            value="output/fileGeologyOrig.png",
+            label="fileGeologyOrig",
+            tags=["png"],
+            make_path=True,
+        )
+        self.fileGeologySub = file_output(
+            key="fileGeologySub",
+            value="output/fileGeologySub.png",
+            label="fileGeologySub",
+            tags=["png"],
+            make_path=True,
+        )
+
+
+def read_input_parameters():
+    return InputParameters()
+
+
+def run_subsampler(Par):
+    """
+    Run the subsampling process based on the input parameters.
+    """
+    Logger.info(f"Par: {Par.geology_input_path}")
+
+    if Par.do_points:
+        Logger.info("Running StructuralOrientationSubSampler...")
+        gdf = gpd.read_file(Par.structures_input_path)
+        sampler = StructuralOrientationSubSampler(
+            gdf, dip_col="Strike", strike_col="Dip", dip_convention="strike"
+        )
+        sampled = sampler.gridCellAveraging(grid_size=Par.pointGridSize)
+        sampled.to_file(Par.structures_output_path)
+        plot_results(gdf, Par.filePointsOrig, "red", gtype="points", title="Original")
+        plot_results(
+            sampled, Par.filePointsSub, "red", gtype="points", title="Subsampled"
+        )
+
+    if Par.do_faults:
+        Logger.info("Running FaultLineMerger...")
+        gdf = gpd.read_file(Par.faults_input_path)
+        sampler = subsampleFaults(Par.faultMinLength)
+        sampled = sampler.filter_geodataframe(gdf)
+        sampled.to_file(Par.faults_output_path)
+        plot_results(gdf, Par.fileFaultsOrig, "black", gtype="faults", title="Original")
+        plot_results(
+            sampled, Par.fileFaultsSub, "black", gtype="faults", title="Subsampled"
+        )
+
+    if Par.do_geology:
+        Logger.info("Running StructuralPolygonSubSampler...")
+        gdf = gpd.read_file(Par.geology_input_path)
+
+        sampler = StructuralPolygonSubSampler(gdf)
+        sampled = sampler.clean_small_polygons_and_holes_new(
+            gdf,
+            min_area_threshold=Par.geologyMinDiam * 1000000.0,
+            distance_threshold=1,
+            strat1="UNITNAME",
+            strat2="GROUP_",
+            strat3="SUPERGROUP",
+            strat4="CRATON",
+            lithoname="OROGEN",
+        )
+        sampled.to_file(Par.geology_output_path)
+        plot_results(
+            gdf, Par.fileGeologyOrig, "gray", gtype="geology", title="Original"
+        )
+        plot_results(
+            sampled, Par.fileGeologySub, "gray", gtype="geology", title="Subsampled"
+        )
+
+
+def plot_results(gdf, path, color, gtype, title="Subsampled"):
+    """
+    Plot the results of the subsampling process.
+    """
+    Logger.info("Plotting results...")
+
+    # Load the sampled data
+
+    # Create a plot
+    fig, ax = plt.subplots(figsize=(10, 10))
+    if gtype == "points":
+        gdf.plot(ax=ax, color=color, markersize=5, label="Structures")
+    elif gtype == "faults":
+        gdf.plot(ax=ax, color=color, linewidth=1.5, label="Faults")
+    else:
+        gdf.plot(ax=ax, column="UNITNAME", alpha=0.5, label="Geology")
+
+    ax.set_title(f"{title} {gtype}")
+    plt.savefig(path)
