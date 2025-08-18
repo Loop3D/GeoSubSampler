@@ -253,7 +253,7 @@ def read_input_parameters():
     return InputParameters()
 
 
-def plot_results(gdf, path, color, gtype, title="Subsampled"):
+def plot_results(gdf, path, color, gtype, field, title="Subsampled"):
     """
     Plot the results of the subsampling process.
     """
@@ -264,7 +264,9 @@ def plot_results(gdf, path, color, gtype, title="Subsampled"):
     # Create a plot
     fig, ax = plt.subplots(figsize=(10, 10))
     if gtype == "points":
-        gdf.plot(ax=ax, color=color, markersize=5, label="Structures")
+        plot_normal_vectors(gdf, azimuth_col=field, vector_length=10000.0)
+
+        # gdf.plot(ax=ax, color=color, markersize=5, label="Structures")
     elif gtype == "faults":
         gdf.plot(ax=ax, color=color, linewidth=1.5, label="Faults")
     else:
@@ -272,6 +274,84 @@ def plot_results(gdf, path, color, gtype, title="Subsampled"):
 
     ax.set_title(f"{title} {gtype}")
     plt.savefig(path)
+
+
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import FancyArrowPatch
+
+
+def plot_normal_vectors(
+    gdf, azimuth_col="azimuth", vector_length=0.001, figsize=(10, 10), arrow_props=None
+):
+    """
+    Plot points as vectors normal (perpendicular) to the azimuth direction.
+
+    Parameters:
+    gdf: GeoDataFrame with Point geometries and azimuth column
+    azimuth_col: name of the azimuth column (in degrees)
+    vector_length: length of the vectors in map units
+    figsize: figure size
+    arrow_props: dictionary of arrow styling properties
+    """
+
+    # Default arrow properties
+    if arrow_props is None:
+        arrow_props = {
+            "arrowstyle": "-",
+            "color": "red",
+            "linewidth": 1.5,
+            "alpha": 0.7,
+        }
+
+    # Create the plot
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Plot the base points
+    # gdf.plot(ax=ax, color="blue", markersize=50, alpha=0.6)
+
+    # Extract coordinates
+    x_coords = gdf.geometry.x
+    y_coords = gdf.geometry.y
+    azimuths = gdf[azimuth_col]
+
+    # Convert azimuth to normal direction
+    # Azimuth is typically measured clockwise from North
+    # Normal vectors are perpendicular (add 90 degrees)
+    normal_angles = azimuths
+
+    # Convert to radians for trigonometry
+    normal_radians = np.radians(normal_angles)
+
+    # Calculate vector end points
+    dx = vector_length * np.sin(normal_radians)
+    dy = vector_length * np.cos(normal_radians)
+
+    # Add vectors to the plot
+    for i in range(len(gdf)):
+        start = (x_coords.iloc[i], y_coords.iloc[i])
+        end = (x_coords.iloc[i] + dx.iloc[i], y_coords.iloc[i] + dy.iloc[i])
+
+        arrow = FancyArrowPatch(start, end, **arrow_props)
+        ax.add_patch(arrow)
+
+    # Set axis limits based on your data bounds
+    buffer = vector_length * 2
+    ax.set_xlim(x_coords.min() - buffer, x_coords.max() + buffer)
+    ax.set_ylim(y_coords.min() - buffer, y_coords.max() + buffer)
+
+    # Set equal aspect ratio and add labels
+    ax.set_aspect("equal")
+    ax.set_xlabel("X coordinate")
+    ax.set_ylabel("Y coordinate")
+    ax.set_title("Strike Direction")
+
+    # Add a grid for better visualization
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    return fig, ax
 
 
 def write_zipped_shapefile(gdf, output_zip_path, layer_name="data"):
@@ -325,7 +405,7 @@ def run_subsampler(Par):
         Logger.info("Running StructuralOrientationSubSampler...")
         gdf = gpd.read_file(Par.structures_input_path)
         sampler = StructuralOrientationSubSampler(
-            gdf, dip_col="Strike", strike_col="Dip", dip_convention="strike"
+            gdf, dip_col="Dip", strike_col="Strike", dip_convention="strike"
         )
 
         pointGridSize = checkUnits(gdf, Par.pointGridSize)
@@ -335,9 +415,21 @@ def run_subsampler(Par):
         write_zipped_shapefile(
             sampled, Par.structures_output_path, layer_name="structures_SubSampled"
         )
-        plot_results(gdf, Par.filePointsOrig, "red", gtype="points", title="Original")
         plot_results(
-            sampled, Par.filePointsSub, "red", gtype="points", title="Subsampled"
+            gdf,
+            Par.filePointsOrig,
+            "red",
+            gtype="points",
+            field=Par.dipDirField,
+            title="Original",
+        )
+        plot_results(
+            sampled,
+            Par.filePointsSub,
+            "red",
+            gtype="points",
+            field=Par.dipDirField,
+            title="Subsampled",
         )
 
     if Par.do_faults:
@@ -352,9 +444,21 @@ def run_subsampler(Par):
         write_zipped_shapefile(
             sampled, Par.faults_output_path, layer_name="faults_SubSampled"
         )
-        plot_results(gdf, Par.fileFaultsOrig, "black", gtype="faults", title="Original")
         plot_results(
-            sampled, Par.fileFaultsSub, "black", gtype="faults", title="Subsampled"
+            gdf,
+            Par.fileFaultsOrig,
+            "black",
+            gtype="faults",
+            field=Par.dipDirField,
+            title="Original",
+        )
+        plot_results(
+            sampled,
+            Par.fileFaultsSub,
+            "black",
+            gtype="faults",
+            field=Par.dipDirField,
+            title="Subsampled",
         )
 
     if Par.do_geology:
@@ -390,11 +494,21 @@ def run_subsampler(Par):
         )
 
         plot_results(
-            gdf, Par.fileGeologyOrig, "gray", gtype="geology", title="Original"
+            gdf,
+            Par.fileGeologyOrig,
+            "gray",
+            gtype="geology",
+            field=Par.dipDirField,
+            title="Original",
         )
         write_zipped_shapefile(
             sampled, Par.geology_output_path, layer_name="geology_SubSampled"
         )
         plot_results(
-            sampled, Par.fileGeologySub, "gray", gtype="geology", title="Subsampled"
+            sampled,
+            Par.fileGeologySub,
+            "gray",
+            gtype="geology",
+            field=Par.dipDirField,
+            title="Subsampled",
         )
