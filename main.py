@@ -141,9 +141,9 @@ def _main(raw_args: List[str] = None):
     if args.flush:
         Project().set_config(ConfigOption.FLUSH_STDOUT, True)
     command = "mkdir tomofast_test_dir"
-    args = shlex.split(command)
+    subargs = shlex.split(command)
     subprocess.run(
-        args,
+        subargs,
         shell=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
