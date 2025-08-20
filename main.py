@@ -11,6 +11,8 @@ import logging
 import os
 from importlib import import_module
 from typing import Dict, List
+import subprocess
+import shlex
 
 from onecode import (
     ConfigOption,
@@ -20,15 +22,11 @@ from onecode import (
     Project,
     check_modules,
     get_imported_modules,
-    register_ext_module
+    register_ext_module,
 )
 
 
-def main(
-    data: Dict = None,
-    flow_name: str = None,
-    logger: logging.Handler = None
-):
+def main(data: Dict = None, flow_name: str = None, logger: logging.Handler = None):
     """
     Starts the OneCode project with the given options.
 
@@ -54,7 +52,7 @@ def main(
         )
 
     # register elements from OneCode inline extensions if any
-    globals()['onecode_ext'] = register_ext_module()
+    globals()["onecode_ext"] = register_ext_module()
 
     Project().data = data
     Logger().reset()
@@ -63,14 +61,18 @@ def main(
     # check all packages are present in current Python env
     if Project().get_config(ConfigOption.CHECK_MODULES):
         Logger.info("Checking required dependencies are in Python environment...")
-        Logger.info("(Use Environment variable ONECODE_FLAG_CHECK_MODULES=0 to turn it off)")
+        Logger.info(
+            "(Use Environment variable ONECODE_FLAG_CHECK_MODULES=0 to turn it off)"
+        )
 
         modules = check_modules(
             modules=get_imported_modules(cur_dir),
-            requirements_file=os.path.join(cur_dir, 'requirements.txt')
+            requirements_file=os.path.join(cur_dir, "requirements.txt"),
         )
 
-        warn_mods = [m.get("msg") for _, m in modules.items() if m.get("msg") is not None]
+        warn_mods = [
+            m.get("msg") for _, m in modules.items() if m.get("msg") is not None
+        ]
 
         if len(warn_mods) > 0:
             Logger.warning(
@@ -92,10 +94,12 @@ def main(
 
     all_manifests = []
     for wfl in workflows:
-        flow_file = wfl['file']
+        flow_file = wfl["file"]
         if flow_name is None or flow_name == flow_file:
-            if not os.path.exists(os.path.join(cur_dir, 'flows', f'{flow_file}.py')):
-                print(f"Registered flow {wfl['label']} ({flow_file}.py) doesn't exist => skipping")
+            if not os.path.exists(os.path.join(cur_dir, "flows", f"{flow_file}.py")):
+                print(
+                    f"Registered flow {wfl['label']} ({flow_file}.py) doesn't exist => skipping"
+                )
             else:
                 Project().current_flow = flow_file
 
@@ -112,20 +116,22 @@ def main(
 
 
 def _main(raw_args: List[str] = None):
-    parser = argparse.ArgumentParser(description='Use optional JSON parameters file')
-    parser.add_argument('--flow', default=None, help='Specify the flow to run')
-    parser.add_argument('--flush', action="store_true", help='Flush the logs immediately')
-    parser.add_argument('file', nargs='?', help='Path to the input JSON file')
+    parser = argparse.ArgumentParser(description="Use optional JSON parameters file")
+    parser.add_argument("--flow", default=None, help="Specify the flow to run")
+    parser.add_argument(
+        "--flush", action="store_true", help="Flush the logs immediately"
+    )
+    parser.add_argument("file", nargs="?", help="Path to the input JSON file")
 
     args = parser.parse_args(raw_args)
 
     data = None
     if args.file is not None:
         if not os.path.exists(args.file):
-            raise FileNotFoundError(f'Input parameters file {args.file} does not exist')
+            raise FileNotFoundError(f"Input parameters file {args.file} does not exist")
 
-        print(f'Using provided parameter file: {args.file}')
-        with open(args.file, 'r') as f:
+        print(f"Using provided parameter file: {args.file}")
+        with open(args.file, "r") as f:
             data = json.load(f)
 
         Project().mode = Mode.LOAD_THEN_EXECUTE
@@ -134,9 +140,18 @@ def _main(raw_args: List[str] = None):
 
     if args.flush:
         Project().set_config(ConfigOption.FLUSH_STDOUT, True)
-
+    command = "mkdir tomofast_test_dir"
+    args = shlex.split(command)
+    subprocess.run(
+        args,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.PIPE,  # Redirect standard input (optional)
+        close_fds=True,
+    )
     main(data, args.flow)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     _main()
