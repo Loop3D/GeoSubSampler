@@ -121,6 +121,12 @@ Filters fault lines based on minimum length criteria.
   - *Units*: Layer units
   - *Description*: Faults shorter than this length are removed
 
+- **Fault Graph**: Calculate Network Graph parameters for fault network   
+  - Does not actual filter, just creates new layer   
+
+- **Fault Stratigraphic Offset**: Maximum stratigraphic offset accross fault for start-, mid- and end-points for fault network   
+  - Does not actual filter, just creates new layer   
+
 ### 3. Polygon Processing
 
 #### Minimum Area Filtering
@@ -200,8 +206,12 @@ The plugin includes validation for:
 
 ## License
 
-This program is free software under the MIT License.
+This program is free software under the MIT License.   
 
+## Future work   
+- Add Ranee's code for simplification of fault/polygon sets preserving topology
+- Simplify fault arrays suing topological constraints   
+   
 ## Author
 
 **Ranee Joshi**  

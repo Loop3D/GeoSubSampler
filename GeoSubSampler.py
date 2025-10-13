@@ -38,7 +38,9 @@ from .calcs.StructuralOrientationSubSampler import StructuralOrientationSubSampl
 from .calcs.StructuralPolygonSubSampler import StructuralPolygonSubSampler
 from .calcs.PolygonTriangulator import PolygonTriangulator
 from .calcs.FaultLineMerger import FaultLineMerger
-from .calcs.subsampleFaults import subsampleFaults
+from .calcs.FaultLengths import FaultLengths
+from .calcs.FaultsGraph import FaultsGraph
+from .calcs.FaultStratOffset import FaultStratOffset
 import geopandas as gpd
 import os
 import random
@@ -582,8 +584,60 @@ class GeoSubSampler:
                 level=Qgis.Warning,
                 duration=15,
             )
+    def fault_Graph(self):
+        self.polyline_layer = ( 
+            self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
+        )
+        if os.path.exists(self.polyline_layer.source()):
+            graph_obj = FaultsGraph()
+            graph_obj.CalcFaultsGraph(self.polyline_layer.source())
+            directory,filename=os.path.split(self.polyline_layer.source())
+            new_path=directory+"/simplified_full_"+str(filename).replace(".shp","_edges.shp")
+            print("dir fn np",directory,filename,new_path)
+            graph_layer = QgsVectorLayer(
+            new_path,self.polyline_layer.name()+"_graph" , "ogr"
+            )
 
-    def subsampleFaults(self):
+            # Check if layer is valid
+            if graph_layer.isValid():
+                QgsProject.instance().addMapLayer(graph_layer)
+            else:
+                print("Failed to load layer", self.polyline_layer+"_graph")
+
+    def fault_strat_offset(self):
+        self.polyline_layer = ( 
+            self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
+        )
+        if os.path.exists(self.polyline_layer.source()) and os.path.exists(self.map_layer.source()):
+            
+            strat_columns=[self.dockwidget.mFieldComboBox_priority_1.currentText(),
+                self.dockwidget.mFieldComboBox_priority_2.currentText(),
+                self.dockwidget.mFieldComboBox_priority_3.currentText(),
+                self.dockwidget.mFieldComboBox_priority_4.currentText()
+        ]
+            strat_offset_obj = FaultStratOffset()
+            strat_offset_obj.CalcFaultStratOffset(
+            self.polyline_layer.source(),
+            self.map_layer.source(),
+            self.polyline_layer.source().replace('.shp','_stratOffset.shp'),
+            strat_columns,
+            offset_distance=50,
+        )       
+
+            directory,filename=os.path.split(self.polyline_layer.source())
+            new_path=directory+"/"+str(filename).replace(".shp","_stratOffset.shp")
+            print("dir fn np",directory,filename,new_path)
+            graph_layer = QgsVectorLayer(
+            new_path,self.polyline_layer.name()+"_stratOffset" , "ogr"
+            )
+
+            # Check if layer is valid
+            if graph_layer.isValid():
+                QgsProject.instance().addMapLayer(graph_layer)
+            else:
+                print("Failed to load layer", self.polyline_layer+"_stratOffset")
+
+    def fault_Lengths(self):
         self.polyline_layer = (
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
@@ -618,7 +672,7 @@ class GeoSubSampler:
                     + ".shp"
                 )
             gdf = gpd.read_file(self.polyline_layer.source())
-            filter_obj = subsampleFaults(min_length=min_length, crs_units=crs_units)
+            filter_obj = FaultLengths(min_length=min_length, crs_units=crs_units)
             filtered_gdf = filter_obj.filter_geodataframe(gdf, length_column="length")
             filtered_gdf.to_file(new_path, driver="ESRI Shapefile")
 
@@ -770,7 +824,9 @@ class GeoSubSampler:
             "Increment for arithmetic series of maps"
         )
         self.dockwidget.pushButton_minPolyArea.setToolTip("Rescale map polygons")
-
+        self.dockwidget.mMapLayerComboBox_maps_polylines.setToolTip(
+            "Fault polyline layer selected for processing"
+        )
         self.dockwidget.mMapLayerComboBox_fault_polylines.setToolTip(
             "Fault polyline layer selected for processing"
         )
@@ -786,8 +842,14 @@ class GeoSubSampler:
         self.dockwidget.lineEdit_merge_join_angle.setToolTip(
             "Maximum angle for newly-formed angle defined by end segments"
         )
-        self.dockwidget.pushButton_fault_subsample.setToolTip(
+        self.dockwidget.pushButton_fault_length.setToolTip(
             "Subsample faults by length"
+        )    
+        self.dockwidget.pushButton_fault_graph.setToolTip(
+            "Add graph data to faults"
+        )         
+        self.dockwidget.pushButton_fault_strat_offset.setToolTip(
+            "Add stratigraphic offset data to faults"
         )
         self.dockwidget.lineEdit_fault_subsample_length.setToolTip(
             "Minimum fault length to retain"
@@ -838,7 +900,9 @@ class GeoSubSampler:
             self.dockwidget.mMapLayerComboBox_maps_polygons.setFilters(
                 QgsMapLayerProxyModel.PolygonLayer
             )
-
+            self.dockwidget.mMapLayerComboBox_maps_polylines.setFilters(
+                QgsMapLayerProxyModel.LineLayer
+            )
             self.dockwidget.mMapLayerComboBox_fault_polylines.setFilters(
                 QgsMapLayerProxyModel.LineLayer
             )
@@ -873,8 +937,14 @@ class GeoSubSampler:
             self.dockwidget.pushButton_merge_segments.clicked.connect(
                 self.mergeSegments
             )
-            self.dockwidget.pushButton_fault_subsample.clicked.connect(
-                self.subsampleFaults
+            self.dockwidget.pushButton_fault_length.clicked.connect(
+                self.fault_Lengths
+            )
+            self.dockwidget.pushButton_fault_graph.clicked.connect(
+                self.fault_Graph
+            )
+            self.dockwidget.pushButton_fault_strat_offset.clicked.connect(
+                self.fault_strat_offset
             )
             self.dockwidget.mFieldComboBox_dip.setAllowEmptyFieldName(True)
             self.dockwidget.mFieldComboBox_dip.setCurrentIndex(0)
