@@ -660,7 +660,7 @@ class GeoSubSampler:
                 layer_path
                 + "/"
                 + self.polyline_layer.name()
-                + "_subSampled_"
+                + "_subSampled_Length_"
                 + str(min_length)
                 + ".shp"
             )
@@ -670,7 +670,7 @@ class GeoSubSampler:
                     layer_path
                     + "/"
                     + self.polyline_layer.name()
-                    + "_subSampled_"
+                    + "_subSampled_Length_"
                     + str(min_length)
                     + "_"
                     + str(random_5_digit_integer)
@@ -684,7 +684,7 @@ class GeoSubSampler:
             # reload as layer
             upscaled_layer = QgsVectorLayer(
                 new_path,
-                self.polyline_layer.name() + "_subSampled",
+                self.polyline_layer.name() + "_subSampled_Length",
                 "ogr",
             )
 
