@@ -610,11 +610,16 @@ class GeoSubSampler:
         )
         if os.path.exists(self.polyline_layer.source()) and os.path.exists(self.map_layer.source()):
             
-            strat_columns=[self.dockwidget.mFieldComboBox_priority_1.currentText(),
-                self.dockwidget.mFieldComboBox_priority_2.currentText(),
-                self.dockwidget.mFieldComboBox_priority_3.currentText(),
-                self.dockwidget.mFieldComboBox_priority_4.currentText()
-        ]
+            strat_columns=[]
+            if self.dockwidget.mFieldComboBox_priority_1.currentText():
+                strat_columns.append(self.dockwidget.mFieldComboBox_priority_1.currentText())
+            if self.dockwidget.mFieldComboBox_priority_2.currentText():
+                strat_columns.append(self.dockwidget.mFieldComboBox_priority_2.currentText())
+            if self.dockwidget.mFieldComboBox_priority_3.currentText():
+                strat_columns.append(self.dockwidget.mFieldComboBox_priority_3.currentText())
+            if self.dockwidget.mFieldComboBox_priority_4.currentText():
+                strat_columns.append(self.dockwidget.mFieldComboBox_priority_4.currentText())
+        
             strat_offset_obj = FaultStratOffset()
             strat_offset_obj.CalcFaultStratOffset(
             self.polyline_layer.source(),
