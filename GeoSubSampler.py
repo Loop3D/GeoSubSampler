@@ -846,10 +846,14 @@ class GeoSubSampler:
             "Subsample faults by length"
         )    
         self.dockwidget.pushButton_fault_graph.setToolTip(
-            "Add graph data to faults"
+            "Add graph data to faults\n" \
+            "Does not filter data, just adds graph attributes" \
         )         
         self.dockwidget.pushButton_fault_strat_offset.setToolTip(
-            "Add stratigraphic offset data to faults"
+            "Add stratigraphic offset data to faults\n" \
+            "Requires both fault and map polygon layers\n" \
+            "as well as Geology Map Priority Codes to be defined\n" \
+            "Does not filter data, just adds Strat Offset attributes" \
         )
         self.dockwidget.lineEdit_fault_subsample_length.setToolTip(
             "Minimum fault length to retain"
