@@ -446,7 +446,7 @@ class GeoSubSampler:
                     minScale = float(self.dockwidget.lineEdit_polygon_area.text())
                     maxScale = float(self.dockwidget.lineEdit_polygon_area.text())
 
-                for upScale in np.arange(minScale, maxScale + 0.001, incScale):
+                for upScale in np.arange(0.0, maxScale + 0.001, incScale):
                     min_area_threshold = ((upScale / 2) ** 2) * np.pi
                     parameter = str(upScale)
                     crs = self.polygon_layer.crs()
@@ -477,7 +477,7 @@ class GeoSubSampler:
                         )
 
                     # Convert QGIS layer to GeoPandas if first in series
-                    if upScale == minScale:
+                    if upScale == 0.0:
                         gdf = gpd.read_file(self.polygon_layer.source())
 
                     # Handle dykes special case
