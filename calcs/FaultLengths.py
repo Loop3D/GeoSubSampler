@@ -5,7 +5,7 @@ from typing import Union, Optional
 import warnings
 
 
-class subsampleFaults:
+class FaultLengths:
     """
     A class to systematically remove polylines shorter than a defined length.
 
@@ -239,7 +239,7 @@ if __name__ == "__main__":
     print(f"Lengths: {gdf.geometry.length.tolist()}")
 
     # Filter polylines
-    filter_obj = subsampleFaults(min_length=2.0, crs_units="units")
+    filter_obj = FaultLengths(min_length=2.0, crs_units="units")
     filtered_gdf = filter_obj.filter_geodataframe(gdf, length_column="length")
 
     print(f"\nFiltered GeoDataFrame (min_length >= 2.0):")
