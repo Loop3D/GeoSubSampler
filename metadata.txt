@@ -4,10 +4,12 @@
 
 [general]
 name=GeoSubSampler
-qgisMinimumVersion=3.0
+qgisMinimumVersion=3.24
+qgisMaximumVersion=4.99
 description=Subsamples geological orientations, faults and polygons
 version=0.1
-author=Ranee Joshi
+supportsQt6=True
+author=Ranee Joshi, Mark Jessell
 email=raneejoshi@gmail.com
 
 about=Takes shapefiles of stratural orientation data, fault polylines and lithostratigraphic polygons and converts them to subsampled equivalents.

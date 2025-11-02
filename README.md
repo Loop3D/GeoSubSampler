@@ -14,7 +14,7 @@ GeoSubSampler is designed to help geologists and GIS professionals manage large 
 
 ## Installation
 
-1. Download the plugin files
+1. Download the plugin files (Use QT6 branch for QGIS 4.xx)
 2. Place them in your QGIS plugins directory
 3. Enable the plugin through QGIS Plugin Manager
 4. The plugin will appear as a dockable widget in QGIS

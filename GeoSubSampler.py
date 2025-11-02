@@ -28,6 +28,26 @@ from qgis.core import QgsProject, QgsMapLayerProxyModel, Qgis
 from qgis.core import QgsVectorLayer, QgsProject
 from qgis.PyQt.QtWidgets import QDockWidget
 
+
+# Qt5/Qt6 Compatibility Layer
+try:
+    # Try Qt6 style first
+    _test = Qt.DockWidgetArea.RightDockWidgetArea
+    # Qt6 detected
+    QT6 = True
+
+    # Qt6 style enums are already available
+    RightDockWidgetArea = Qt.DockWidgetArea.RightDockWidgetArea
+
+
+except AttributeError:
+    # Qt5 detected
+    QT6 = False
+
+    # Qt5 style enums
+    RightDockWidgetArea = Qt.RightDockWidgetArea
+
+
 # Initialize Qt resources from file resources.py
 from .resources import *
 
@@ -233,7 +253,7 @@ class GeoSubSampler:
             print(f"No layers found with name '{layerName}'")
             return 0
 
-    def setUpPointSampler(self,checkFields=True):
+    def setUpPointSampler(self, checkFields=True):
         layerName = self.dockwidget.mMapLayerComboBox_points.currentText()
         dip_col = self.dockwidget.mFieldComboBox_dip.currentText()
         dip_dir_col = self.dockwidget.mFieldComboBox_dip_dir.currentText()
@@ -245,24 +265,21 @@ class GeoSubSampler:
 
             gdf = gpd.read_file(self.points_layer.source())
 
-            if (dip_col=='' or dip_dir_col=='') and checkFields:
+            if (dip_col == "" or dip_dir_col == "") and checkFields:
                 self.iface.messageBar().pushMessage(
-                "Please define dip & dip dir/strike fields before continuing!",
-                level=Qgis.Warning,
-                duration=15,
+                    "Please define dip & dip dir/strike fields before continuing!",
+                    level=Qgis.Warning,
+                    duration=15,
                 )
-                return False   
-            elif dip_col=='' or dip_dir_col=='':
-                dip_col=gdf.columns[1]
-                dip_dir_col=gdf.columns[2]
-
-
+                return False
+            elif dip_col == "" or dip_dir_col == "":
+                dip_col = gdf.columns[1]
+                dip_dir_col = gdf.columns[2]
 
             if self.dockwidget.checkBox_dip_dir.isChecked():
                 dip_convention = "dip_direction"
             else:
                 dip_convention = "strike"
-
 
             # Create an instance of StructuralOrientationSubSampler
             return StructuralOrientationSubSampler(
@@ -423,8 +440,10 @@ class GeoSubSampler:
             self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
         )
         if self.polygon_layer is not None:
-            if os.path.exists(self.polygon_layer.source()) :
-                distance_threshold = float(self.dockwidget.lineEdit_node_tolerance.text())
+            if os.path.exists(self.polygon_layer.source()):
+                distance_threshold = float(
+                    self.dockwidget.lineEdit_node_tolerance.text()
+                )
                 lithoname = self.dockwidget.mFieldComboBox_priority_5.currentText()
                 strat1 = self.dockwidget.mFieldComboBox_priority_1.currentText()
                 strat2 = self.dockwidget.mFieldComboBox_priority_2.currentText()
@@ -522,7 +541,8 @@ class GeoSubSampler:
                         QgsProject.instance().addMapLayer(upscaled_layer)
                     else:
                         print(
-                            "Failed to load layer", self.polygon_layer.name() + "_min_area"
+                            "Failed to load layer",
+                            self.polygon_layer.name() + "_min_area",
                         )
 
                     QgsProject.instance().addMapLayer(upscaled_layer)
@@ -584,63 +604,80 @@ class GeoSubSampler:
                 level=Qgis.Warning,
                 duration=15,
             )
+
     def fault_Graph(self):
-        self.polyline_layer = ( 
+        self.polyline_layer = (
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
         if os.path.exists(self.polyline_layer.source()):
             graph_obj = FaultsGraph()
             graph_obj.CalcFaultsGraph(self.polyline_layer.source())
-            directory,filename=os.path.split(self.polyline_layer.source())
-            new_path=directory+"/simplified_full_"+str(filename).replace(".shp","_edges.shp")
-            print("dir fn np",directory,filename,new_path)
+            directory, filename = os.path.split(self.polyline_layer.source())
+            new_path = (
+                directory
+                + "/simplified_full_"
+                + str(filename).replace(".shp", "_edges.shp")
+            )
+            print("dir fn np", directory, filename, new_path)
             graph_layer = QgsVectorLayer(
-            new_path,self.polyline_layer.name()+"_graph" , "ogr"
+                new_path, self.polyline_layer.name() + "_graph", "ogr"
             )
 
             # Check if layer is valid
             if graph_layer.isValid():
                 QgsProject.instance().addMapLayer(graph_layer)
             else:
-                print("Failed to load layer", self.polyline_layer+"_graph")
+                print("Failed to load layer", self.polyline_layer + "_graph")
 
     def fault_strat_offset(self):
-        self.polyline_layer = ( 
+        self.polyline_layer = (
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
-        if os.path.exists(self.polyline_layer.source()) and os.path.exists(self.map_layer.source()):
-            
-            strat_columns=[]
+        if os.path.exists(self.polyline_layer.source()) and os.path.exists(
+            self.map_layer.source()
+        ):
+
+            strat_columns = []
             if self.dockwidget.mFieldComboBox_priority_1.currentText():
-                strat_columns.append(self.dockwidget.mFieldComboBox_priority_1.currentText())
+                strat_columns.append(
+                    self.dockwidget.mFieldComboBox_priority_1.currentText()
+                )
             if self.dockwidget.mFieldComboBox_priority_2.currentText():
-                strat_columns.append(self.dockwidget.mFieldComboBox_priority_2.currentText())
+                strat_columns.append(
+                    self.dockwidget.mFieldComboBox_priority_2.currentText()
+                )
             if self.dockwidget.mFieldComboBox_priority_3.currentText():
-                strat_columns.append(self.dockwidget.mFieldComboBox_priority_3.currentText())
+                strat_columns.append(
+                    self.dockwidget.mFieldComboBox_priority_3.currentText()
+                )
             if self.dockwidget.mFieldComboBox_priority_4.currentText():
-                strat_columns.append(self.dockwidget.mFieldComboBox_priority_4.currentText())
-        
+                strat_columns.append(
+                    self.dockwidget.mFieldComboBox_priority_4.currentText()
+                )
+
             strat_offset_obj = FaultStratOffset()
             strat_offset_obj.CalcFaultStratOffset(
-            self.polyline_layer.source(),
-            self.map_layer.source(),
-            self.polyline_layer.source().replace('.shp','_stratOffset.shp'),
-            strat_columns,
-            offset_distance=50,
-        )       
+                self.polyline_layer.source(),
+                self.map_layer.source(),
+                self.polyline_layer.source().replace(".shp", "_stratOffset.shp"),
+                strat_columns,
+                offset_distance=50,
+            )
 
-            directory,filename=os.path.split(self.polyline_layer.source())
-            new_path=directory+"/"+str(filename).replace(".shp","_stratOffset.shp")
-            print("dir fn np",directory,filename,new_path)
+            directory, filename = os.path.split(self.polyline_layer.source())
+            new_path = (
+                directory + "/" + str(filename).replace(".shp", "_stratOffset.shp")
+            )
+            print("dir fn np", directory, filename, new_path)
             graph_layer = QgsVectorLayer(
-            new_path,self.polyline_layer.name()+"_stratOffset" , "ogr"
+                new_path, self.polyline_layer.name() + "_stratOffset", "ogr"
             )
 
             # Check if layer is valid
             if graph_layer.isValid():
                 QgsProject.instance().addMapLayer(graph_layer)
             else:
-                print("Failed to load layer", self.polyline_layer+"_stratOffset")
+                print("Failed to load layer", self.polyline_layer + "_stratOffset")
 
     def fault_Lengths(self):
         self.polyline_layer = (
@@ -847,18 +884,16 @@ class GeoSubSampler:
         self.dockwidget.lineEdit_merge_join_angle.setToolTip(
             "Maximum angle for newly-formed angle defined by end segments"
         )
-        self.dockwidget.pushButton_fault_length.setToolTip(
-            "Subsample faults by length"
-        )    
+        self.dockwidget.pushButton_fault_length.setToolTip("Subsample faults by length")
         self.dockwidget.pushButton_fault_graph.setToolTip(
-            "Add graph data to faults\n" \
-            "Does not filter data, just adds graph attributes" \
-        )         
+            "Add graph data to faults\n"
+            "Does not filter data, just adds graph attributes"
+        )
         self.dockwidget.pushButton_fault_strat_offset.setToolTip(
-            "Add stratigraphic offset data to faults\n" \
-            "Requires both fault and map polygon layers\n" \
-            "as well as Geology Map Priority Codes to be defined\n" \
-            "Does not filter data, just adds Strat Offset attributes" \
+            "Add stratigraphic offset data to faults\n"
+            "Requires both fault and map polygon layers\n"
+            "as well as Geology Map Priority Codes to be defined\n"
+            "Does not filter data, just adds Strat Offset attributes"
         )
         self.dockwidget.lineEdit_fault_subsample_length.setToolTip(
             "Minimum fault length to retain"
@@ -884,12 +919,12 @@ class GeoSubSampler:
 
             # show the dockwidget
             # TODO: fix to allow choice of dock location
-            self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dockwidget)
+            self.iface.addDockWidget(RightDockWidgetArea, self.dockwidget)
             # Find existing dock widgets in the right area
             right_docks = [
                 d
                 for d in self.iface.mainWindow().findChildren(QDockWidget)
-                if self.iface.mainWindow().dockWidgetArea(d) == Qt.RightDockWidgetArea
+                if self.iface.mainWindow().dockWidgetArea(d) == RightDockWidgetArea
             ]
             # If there are other dock widgets, tab this one with the first one found
             if right_docks:
@@ -946,12 +981,8 @@ class GeoSubSampler:
             self.dockwidget.pushButton_merge_segments.clicked.connect(
                 self.mergeSegments
             )
-            self.dockwidget.pushButton_fault_length.clicked.connect(
-                self.fault_Lengths
-            )
-            self.dockwidget.pushButton_fault_graph.clicked.connect(
-                self.fault_Graph
-            )
+            self.dockwidget.pushButton_fault_length.clicked.connect(self.fault_Lengths)
+            self.dockwidget.pushButton_fault_graph.clicked.connect(self.fault_Graph)
             self.dockwidget.pushButton_fault_strat_offset.clicked.connect(
                 self.fault_strat_offset
             )
