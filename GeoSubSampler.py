@@ -686,7 +686,6 @@ class GeoSubSampler:
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
         if os.path.exists(self.polyline_layer.source()):
-            min_length = float(self.dockwidget.lineEdit_fault_subsample_length.text())
 
             crs = self.polyline_layer.crs()
             if crs.isGeographic():
@@ -694,36 +693,15 @@ class GeoSubSampler:
             else:
                 crs_units = "meters"
 
-            layer_path = os.path.dirname(self.polyline_layer.source())
-            new_path = (
-                layer_path
-                + "/"
-                + self.polyline_layer.name()
-                + "_subSampled_Length_"
-                + str(min_length)
-                + ".shp"
-            )
-            if os.path.exists(new_path):
-                random_5_digit_integer = random.randint(10000, 99999)
-                new_path = (
-                    layer_path
-                    + "/"
-                    + self.polyline_layer.name()
-                    + "_subSampled_Length_"
-                    + str(min_length)
-                    + "_"
-                    + str(random_5_digit_integer)
-                    + ".shp"
-                )
-            gdf = gpd.read_file(self.polyline_layer.source())
-            filter_obj = FaultLengths(min_length=min_length, crs_units=crs_units)
-            filtered_gdf = filter_obj.filter_geodataframe(gdf, length_column="length")
-            filtered_gdf.to_file(new_path, driver="ESRI Shapefile")
+            outPath = self.polyline_layer.source().replace(".shp", "_length.shp")
+            filter_obj = FaultLengths()
+            gdf = filter_obj.add_polyline_length(self.polyline_layer.source(), output_path=outPath, length_field='line_len', 
+                        unit=crs_units, force_projection=None)
 
             # reload as layer
             upscaled_layer = QgsVectorLayer(
-                new_path,
-                self.polyline_layer.name() + "_subSampled_Length",
+                outPath,
+                self.polyline_layer.name() + "_Length",
                 "ogr",
             )
 
@@ -731,7 +709,7 @@ class GeoSubSampler:
             if upscaled_layer.isValid():
                 QgsProject.instance().addMapLayer(upscaled_layer)
             else:
-                print("Failed to load layer", self.polyline_layer.name() + "_min_area")
+                print("Failed to load layer", self.polyline_layer.name() + "_Length")
 
         else:
             self.iface.messageBar().pushMessage(
@@ -923,10 +901,16 @@ class GeoSubSampler:
         self.dockwidget.lineEdit_merge_join_angle.setToolTip(
             "Maximum angle for newly-formed angle defined by end segments"
         )
-        self.dockwidget.pushButton_fault_length.setToolTip("Subsample faults by length")
+        self.dockwidget.pushButton_fault_length.setToolTip("Add faults length\n"
+            "Does not filter data, just adds length attribute")
+        
         self.dockwidget.pushButton_fault_graph.setToolTip(
             "Add graph data to faults\n"
             "Does not filter data, just adds graph attributes"
+        )
+        self.dockwidget.pushButton_fault_orientation_clusters.setToolTip(
+            "Add suite of orientation cluster data to faults (2-7 clusters)\n"
+            "Does not filter data, just adds cluster attributes"
         )
         self.dockwidget.pushButton_fault_strat_offset.setToolTip(
             "Add stratigraphic offset data to faults\n"
@@ -934,9 +918,7 @@ class GeoSubSampler:
             "as well as Geology Map Priority Codes to be defined\n"
             "Does not filter data, just adds Strat Offset attributes"
         )
-        self.dockwidget.lineEdit_fault_subsample_length.setToolTip(
-            "Minimum fault length to retain"
-        )
+
 
     def run(self):
         """Run method that loads and starts the plugin"""
