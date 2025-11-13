@@ -116,10 +116,8 @@ WARNING: This is not particulary optimised and may take hours to complete on lar
 Filters fault lines based on minimum length criteria.
 
 **Parameters:**
-- **Minimum Fault Length**: Threshold length for fault retention
-  - *Type*: Float
-  - *Units*: Layer units
-  - *Description*: Faults shorter than this length are removed
+- **Minimum Fault Length**: Calculate length for faults   
+  - Does not actual filter, just creates new layer   
 
 - **Fault Graph**: Calculate Network Graph parameters for fault network   
   - Does not actual filter, just creates new layer   
@@ -127,9 +125,6 @@ Filters fault lines based on minimum length criteria.
 - **Fault Stratigraphic Offset**: Maximum stratigraphic offset accross fault for start-, mid- and end-points for fault network   
   - Does not actual filter, just creates new layer   
 
-- **Fault Orientation Clusters**: K-Means clustering (2-7 clusters) for fault network   
-  - Does not actual filter, just creates new layers for each number of clusters and loads "best" cluster based on Silhouette score   
-  
 ### 3. Polygon Processing
 
 #### Minimum Area Filtering
