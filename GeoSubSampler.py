@@ -27,6 +27,7 @@ from qgis.PyQt.QtWidgets import QAction
 from qgis.core import QgsProject, QgsMapLayerProxyModel, Qgis
 from qgis.core import QgsVectorLayer, QgsProject
 from qgis.PyQt.QtWidgets import QDockWidget
+from qgis.core import QgsMessageLog, Qgis
 
 
 # Qt5/Qt6 Compatibility Layer
@@ -61,6 +62,7 @@ from .calcs.FaultLineMerger import FaultLineMerger
 from .calcs.FaultLengths import FaultLengths
 from .calcs.FaultsGraph import FaultsGraph
 from .calcs.FaultStratOffset import FaultStratOffset
+from .calcs.FaultClusterOrientation import FaultsOrientations
 import geopandas as gpd
 import os
 import random
@@ -738,6 +740,43 @@ class GeoSubSampler:
                 duration=15,
             )
 
+
+    def fault_ClusterOrientations(self):
+        print("fault_ClusterOrientations")
+        print("polyline_layer:", self.dockwidget.mMapLayerComboBox_fault_polylines.currentText())
+        self.polyline_layer = (
+            self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
+        )
+        if os.path.exists(self.polyline_layer.source()):
+            outPath = self.polyline_layer.source().replace(".shp", "_endpt_az.shp")
+            filter_obj = FaultsOrientations()
+            gdf = filter_obj.add_endpoint_azimuth(
+            self.polyline_layer.source(), 
+            outPath,
+            azimuth_field='endpt_az'
+            )
+
+            best_n = filter_obj.example_manual_clusters(outPath, self.dockwidget.mMapLayerComboBox_fault_polylines.currentText(),azimuth_field='endpt_az')
+            layer_path = os.path.dirname(self.polyline_layer.source())
+            new_path = (
+                layer_path
+                + "/"
+                + self.polyline_layer.name()
+                + f"_fault_clusters_{best_n}.shp"
+            )            
+            
+            upscaled_layer = QgsVectorLayer(
+                new_path,
+                self.polyline_layer.name() + f"_fault_clusters_{best_n}",
+                "ogr",
+            )
+
+            # Check if layer is valid
+            if upscaled_layer.isValid():
+                QgsProject.instance().addMapLayer(upscaled_layer)
+            else:
+                print("Failed to load layer", self.polyline_layer.name() +  f"_fault_clusters_{best_n}")
+
     def updatePointsFields(self):
         """Update the fields in the points layer combo box when a new layer is selected."""
         layerName = self.dockwidget.mMapLayerComboBox_points.currentText()
@@ -905,7 +944,7 @@ class GeoSubSampler:
         if not self.pluginIsActive:
             self.pluginIsActive = True
 
-            # print "** STARTING GeoSubSampler"
+            # print ("** STARTING GeoSubSampler")
 
             # dockwidget may not exist if:
             #    first run of plugin
@@ -985,6 +1024,9 @@ class GeoSubSampler:
             self.dockwidget.pushButton_fault_graph.clicked.connect(self.fault_Graph)
             self.dockwidget.pushButton_fault_strat_offset.clicked.connect(
                 self.fault_strat_offset
+            )
+            self.dockwidget.pushButton_fault_orientation_clusters.clicked.connect(
+                self.fault_ClusterOrientations
             )
             self.dockwidget.mFieldComboBox_dip.setAllowEmptyFieldName(True)
             self.dockwidget.mFieldComboBox_dip.setCurrentIndex(0)

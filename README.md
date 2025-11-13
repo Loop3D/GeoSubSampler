@@ -127,6 +127,9 @@ Filters fault lines based on minimum length criteria.
 - **Fault Stratigraphic Offset**: Maximum stratigraphic offset accross fault for start-, mid- and end-points for fault network   
   - Does not actual filter, just creates new layer   
 
+- **Fault Orientation Clusters**: K-Means clustering (2-7 clusters) for fault network   
+  - Does not actual filter, just creates new layers for each number of clusters and loads "best" cluster based on Silhouette score   
+  
 ### 3. Polygon Processing
 
 #### Minimum Area Filtering
