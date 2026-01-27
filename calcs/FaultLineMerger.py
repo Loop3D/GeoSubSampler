@@ -1,9 +1,15 @@
+# -*- coding: utf-8 -*-
+"""
+FaultLineMerger - Merges connected fault line segments based on distance and angle criteria.
+
+This version uses Shapely's STRtree instead of rtree to avoid DLL conflicts with QGIS.
+"""
+
 import geopandas as gpd
 import numpy as np
-from shapely.geometry import LineString, MultiLineString, Point
+from shapely.geometry import LineString, MultiLineString, Point, box
 from shapely.ops import linemerge
-import networkx as nx
-from rtree import index
+from shapely import STRtree
 import math
 from typing import List, Tuple, Optional
 
@@ -46,19 +52,15 @@ class FaultLineMerger:
                 lines.append(geom)
         return lines
 
-    def build_spatial_index(self, lines: List[LineString]) -> index.Index:
+    def build_spatial_index(self, lines: List[LineString]) -> Tuple[STRtree, List[LineString]]:
         """
-        Build spatial index for efficient spatial queries.
-        Uses full bounding boxes for the spatial index entries.
+        Build spatial index for efficient spatial queries using Shapely's STRtree.
 
         Returns:
-        Rtree spatial index
+        Tuple of (STRtree spatial index, list of lines)
         """
-        idx = index.Index()
-        for i, line in enumerate(lines):
-            bounds = line.bounds
-            idx.insert(i, bounds)
-        return idx
+        tree = STRtree(lines)
+        return tree, lines
 
     def get_endpoint_bounds(
         self, line: LineString, endpoint: str
@@ -310,7 +312,7 @@ class FaultLineMerger:
                 print(f"Iteration {iteration}: Processing {len(working_lines)} lines")
 
             # Rebuild spatial index for current lines
-            spatial_idx = self.build_spatial_index(working_lines)
+            spatial_tree, indexed_lines = self.build_spatial_index(working_lines)
 
             # Simple optimization: process larger indices first to minimize index shifting
             # when we remove elements
@@ -321,7 +323,7 @@ class FaultLineMerger:
                 target_line = working_lines[i]
 
                 # Find merge candidates
-                candidates = self.find_merge_candidates(i, working_lines, spatial_idx)
+                candidates = self.find_merge_candidates(i, working_lines, spatial_tree)
 
                 if candidates:
                     # Sort by straightness score (best first)
@@ -363,7 +365,7 @@ class FaultLineMerger:
         return working_lines
 
     def find_merge_candidates(
-        self, target_idx: int, lines: List[LineString], spatial_idx: index.Index
+        self, target_idx: int, lines: List[LineString], spatial_tree: STRtree
     ) -> List[Tuple[int, str, str, float]]:
         """
         Find all potential merge candidates for a given line using endpoint-based spatial queries.
@@ -378,9 +380,13 @@ class FaultLineMerger:
         for target_endpoint in ["start", "end"]:
             # Get small bounding box around this endpoint
             endpoint_bounds = self.get_endpoint_bounds(target_line, target_endpoint)
-
-            # Find lines that intersect with this endpoint area
-            potential_indices = list(spatial_idx.intersection(endpoint_bounds))
+            
+            # Create a box geometry for the query
+            query_box = box(*endpoint_bounds)
+            
+            # Find lines that intersect with this endpoint area using STRtree
+            # STRtree.query returns indices of geometries that intersect with the query geometry
+            potential_indices = spatial_tree.query(query_box)
 
             for candidate_idx in potential_indices:
                 if candidate_idx == target_idx:
@@ -406,10 +412,11 @@ class FaultLineMerger:
         Main processing function.
 
         Parameters:
-        input_path: Path to input shapefile
-        output_path: Path to output shapefile
+        gdf: GeoDataFrame with line geometries
+        
+        Returns:
+        GeoDataFrame with merged line geometries
         """
-        # print(f"Reading shapefile: {input_path}")
         print(f"Original features: {len(gdf)}")
 
         # Explode multilinestrings
@@ -426,10 +433,6 @@ class FaultLineMerger:
         output_gdf = gpd.GeoDataFrame({"geometry": merged_lines}, crs=gdf.crs)
 
         return output_gdf
-        """# Save to shapefile
-        print(f"Saving to: {output_path}")
-        output_gdf.to_file(output_path)
-        print("Processing complete!")"""
 
 
 # Usage example
@@ -446,5 +449,5 @@ if __name__ == "__main__":
     )
     gdf = gpd.read_file(input_shapefile)
     # Process the shapefile
-    output_gdf = merger.process_shapefile(gdf, input_shapefile)
+    output_gdf = merger.process_shapefile(gdf)
     output_gdf.to_file(output_shapefile, driver="ESRI Shapefile")
