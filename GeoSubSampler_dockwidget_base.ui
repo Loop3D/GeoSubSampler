@@ -18,9 +18,9 @@
     <property name="geometry">
      <rect>
       <x>9</x>
-      <y>470</y>
+      <y>430</y>
       <width>605</width>
-      <height>221</height>
+      <height>281</height>
      </rect>
     </property>
     <property name="title">
@@ -359,6 +359,48 @@ sep)</string>
       <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
      </property>
     </widget>
+    <widget class="QPushButton" name="pushButton_simplifyMap">
+     <property name="geometry">
+      <rect>
+       <x>20</x>
+       <y>250</y>
+       <width>101</width>
+       <height>23</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Simplify Map</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="lineEdit_area_tolerance">
+     <property name="geometry">
+      <rect>
+       <x>180</x>
+       <y>220</y>
+       <width>61</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>10000</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="label_28">
+     <property name="geometry">
+      <rect>
+       <x>30</x>
+       <y>220</y>
+       <width>141</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Area Tolerance (m2)</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+     </property>
+    </widget>
    </widget>
    <widget class="QGroupBox" name="groupBox">
     <property name="geometry">
@@ -366,7 +408,7 @@ sep)</string>
       <x>9</x>
       <y>92</y>
       <width>605</width>
-      <height>251</height>
+      <height>211</height>
      </rect>
     </property>
     <property name="sizePolicy">
@@ -387,7 +429,7 @@ sep)</string>
     <widget class="QPushButton" name="pushButton_stochastic">
      <property name="geometry">
       <rect>
-       <x>14</x>
+       <x>30</x>
        <y>60</y>
        <width>91</width>
        <height>23</height>
@@ -400,7 +442,7 @@ sep)</string>
     <widget class="QPushButton" name="pushButton_gridCellAveraging">
      <property name="geometry">
       <rect>
-       <x>30</x>
+       <x>46</x>
        <y>90</y>
        <width>75</width>
        <height>23</height>
@@ -539,7 +581,7 @@ sep)</string>
     <widget class="QPushButton" name="pushButton_kent">
      <property name="geometry">
       <rect>
-       <x>30</x>
+       <x>46</x>
        <y>120</y>
        <width>75</width>
        <height>23</height>
@@ -597,7 +639,7 @@ sep)</string>
     <widget class="QPushButton" name="pushButton_kentOutlier">
      <property name="geometry">
       <rect>
-       <x>14</x>
+       <x>30</x>
        <y>150</y>
        <width>91</width>
        <height>23</height>
@@ -605,7 +647,7 @@ sep)</string>
      </property>
      <property name="font">
       <font>
-       <pointsize>7</pointsize>
+       <pointsize>8</pointsize>
       </font>
      </property>
      <property name="text">
@@ -647,50 +689,24 @@ sep)</string>
       <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
      </property>
     </widget>
-    <widget class="QLabel" name="label_12">
-     <property name="geometry">
-      <rect>
-       <x>10</x>
-       <y>180</y>
-       <width>151</width>
-       <height>20</height>
-      </rect>
-     </property>
-     <property name="text">
-      <string>Select Polyline Layer</string>
-     </property>
-     <property name="alignment">
-      <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-     </property>
-    </widget>
-    <widget class="QgsMapLayerComboBox" name="mMapLayerComboBox_points_polylines">
-     <property name="geometry">
-      <rect>
-       <x>170</x>
-       <y>180</y>
-       <width>231</width>
-       <height>21</height>
-      </rect>
-     </property>
-    </widget>
     <widget class="QLineEdit" name="lineEdit_1o_distance">
      <property name="geometry">
       <rect>
        <x>196</x>
-       <y>210</y>
+       <y>180</y>
        <width>61</width>
        <height>20</height>
       </rect>
      </property>
      <property name="text">
-      <string>.1</string>
+      <string>1000</string>
      </property>
     </widget>
     <widget class="QLabel" name="label_9">
      <property name="geometry">
       <rect>
        <x>112</x>
-       <y>210</y>
+       <y>180</y>
        <width>71</width>
        <height>20</height>
       </rect>
@@ -706,7 +722,7 @@ sep)</string>
      <property name="geometry">
       <rect>
        <x>266</x>
-       <y>210</y>
+       <y>180</y>
        <width>51</width>
        <height>20</height>
       </rect>
@@ -722,7 +738,7 @@ sep)</string>
      <property name="geometry">
       <rect>
        <x>320</x>
-       <y>210</y>
+       <y>180</y>
        <width>71</width>
        <height>20</height>
       </rect>
@@ -735,14 +751,14 @@ sep)</string>
      <property name="geometry">
       <rect>
        <x>20</x>
-       <y>210</y>
+       <y>180</y>
        <width>101</width>
        <height>23</height>
       </rect>
      </property>
      <property name="font">
       <font>
-       <pointsize>7</pointsize>
+       <pointsize>8</pointsize>
       </font>
      </property>
      <property name="text">
@@ -773,7 +789,7 @@ sep)</string>
     <property name="geometry">
      <rect>
       <x>9</x>
-      <y>350</y>
+      <y>310</y>
       <width>605</width>
       <height>111</height>
      </rect>

@@ -63,6 +63,8 @@ from .calcs.FaultLengths import FaultLengths
 from .calcs.FaultsGraph import FaultsGraph
 from .calcs.FaultStratOffset import FaultStratOffset
 from .calcs.FaultClusterOrientation import FaultsOrientations
+from .calcs.FirstOrderOrientation import SubsamplingEngine  
+from .calcs.PolygonSimplification import SimplificationEngine, vector_simplify_file_two_stage
 import geopandas as gpd
 import os
 import random
@@ -295,16 +297,21 @@ class GeoSubSampler:
             )
             return False
 
-    def finalisePointSampler(self, gdf2, qgis_layer, name, param):
+    def finalisePointSampler(self, gdf2, qgis_layer, name, param=0):
         layer_path = os.path.dirname(qgis_layer.source())
+        if(param==0):
+            param2 = ''
+
+        else:
+            param2="_"+ str(int(param))
+
         new_path = (
             layer_path
             + "/"
             + qgis_layer.name()
             + "_"
             + name
-            + "_"
-            + str(param)
+            + param2
             + ".shp"
         )
         # print("new_path:", new_path)
@@ -316,8 +323,7 @@ class GeoSubSampler:
                 + qgis_layer.name()
                 + "_"
                 + name
-                + "_"
-                + str(param)
+                + param2
                 + "_"
                 + str(random_5_digit_integer)
                 + ".shp"
@@ -328,7 +334,7 @@ class GeoSubSampler:
 
         # reload as layer
         upscaled_layer = QgsVectorLayer(
-            new_path, qgis_layer.name() + "_" + name + "_" + str(param), "ogr"
+            new_path, qgis_layer.name() + "_" + name +  str(param2), "ogr"
         )
 
         # Check if layer is valid
@@ -435,8 +441,42 @@ class GeoSubSampler:
             )
 
     def firstOrder(self):
-        pass
+        self.polygon_layer = (
+            self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
+        )
+        self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
+        if self.polygon_layer is not None and self.point_layer is not None:
+            if os.path.exists(self.polygon_layer.source()) and os.path.exists(self.point_layer.source()):
+                distance_threshold = float(
+                    self.dockwidget.lineEdit_1o_distance.text()
+                )
+                angle_threshold = float(self.dockwidget.lineEdit_1o_angle.text())
 
+                # Convert QGIS layer to GeoPandas
+                geology         = gpd.read_file(self.polygon_layer.source())
+                contact_gdf     = geology[['geometry']].copy()
+                contact_gdf['geometry'] = geology.boundary
+                orientation_gdf = gpd.read_file(self.point_layer.source())
+                dip_col = self.dockwidget.mFieldComboBox_dip.currentText()
+                dip_dir_col = self.dockwidget.mFieldComboBox_dip_dir.currentText()
+                if not dip_col or not dip_dir_col:
+                    print("First Order: please select DIP and DIP_DIR fields before running.")
+                    return
+
+                # Create an instance of SubsamplingEngine
+                subsampler = SubsamplingEngine(dip=dip_col, dipdir=dip_dir_col)
+                kwargs={}
+                kwargs['contact_gdf'] = contact_gdf
+                kwargs['dist_buffer']= distance_threshold
+                kwargs['angle_tol']= angle_threshold
+
+
+                output_gdf=subsampler.subsample("firstorder", orientation_gdf, path_out="", **kwargs)
+
+
+                # Write GeoPandas back to file and reload
+                self.finalisePointSampler(
+                    output_gdf, self.polygon_layer, f"first_order_{int(distance_threshold)}_{int(angle_threshold)}")
     def minPolyArea(self):
         self.polygon_layer = (
             self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
@@ -695,8 +735,13 @@ class GeoSubSampler:
 
             outPath = self.polyline_layer.source().replace(".shp", "_length.shp")
             filter_obj = FaultLengths()
-            gdf = filter_obj.add_polyline_length(self.polyline_layer.source(), output_path=outPath, length_field='line_len', 
-                        unit=crs_units, force_projection=None)
+            gdf = filter_obj.add_polyline_length(
+                self.polyline_layer.source(),
+                output_path=outPath,
+                length_field="line_len",
+                unit=crs_units,
+                force_projection=None,
+            )
 
             # reload as layer
             upscaled_layer = QgsVectorLayer(
@@ -718,10 +763,12 @@ class GeoSubSampler:
                 duration=15,
             )
 
-
     def fault_ClusterOrientations(self):
         print("fault_ClusterOrientations")
-        print("polyline_layer:", self.dockwidget.mMapLayerComboBox_fault_polylines.currentText())
+        print(
+            "polyline_layer:",
+            self.dockwidget.mMapLayerComboBox_fault_polylines.currentText(),
+        )
         self.polyline_layer = (
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
@@ -729,20 +776,22 @@ class GeoSubSampler:
             outPath = self.polyline_layer.source().replace(".shp", "_endpt_az.shp")
             filter_obj = FaultsOrientations()
             gdf = filter_obj.add_endpoint_azimuth(
-            self.polyline_layer.source(), 
-            outPath,
-            azimuth_field='endpt_az'
+                self.polyline_layer.source(), outPath, azimuth_field="endpt_az"
             )
 
-            best_n = filter_obj.example_manual_clusters(outPath, self.dockwidget.mMapLayerComboBox_fault_polylines.currentText(),azimuth_field='endpt_az')
+            best_n = filter_obj.example_manual_clusters(
+                outPath,
+                self.dockwidget.mMapLayerComboBox_fault_polylines.currentText(),
+                azimuth_field="endpt_az",
+            )
             layer_path = os.path.dirname(self.polyline_layer.source())
             new_path = (
                 layer_path
                 + "/"
                 + self.polyline_layer.name()
                 + f"_fault_clusters_{best_n}.shp"
-            )            
-            
+            )
+
             upscaled_layer = QgsVectorLayer(
                 new_path,
                 self.polyline_layer.name() + f"_fault_clusters_{best_n}",
@@ -753,7 +802,10 @@ class GeoSubSampler:
             if upscaled_layer.isValid():
                 QgsProject.instance().addMapLayer(upscaled_layer)
             else:
-                print("Failed to load layer", self.polyline_layer.name() +  f"_fault_clusters_{best_n}")
+                print(
+                    "Failed to load layer",
+                    self.polyline_layer.name() + f"_fault_clusters_{best_n}",
+                )
 
     def updatePointsFields(self):
         """Update the fields in the points layer combo box when a new layer is selected."""
@@ -762,6 +814,55 @@ class GeoSubSampler:
             self.points_layer = QgsProject.instance().mapLayersByName(layerName)[0]
             self.dockwidget.mFieldComboBox_dip.setLayer(self.points_layer)
             self.dockwidget.mFieldComboBox_dip_dir.setLayer(self.points_layer)
+
+    def simplifyMap(self):
+        polygon_layer = self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
+        fault_layer = self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
+        if polygon_layer is None or fault_layer is None:
+            return
+        area_tolerance = int(self.dockwidget.lineEdit_area_tolerance.text())
+        input_file = polygon_layer.source()
+        fault_file = fault_layer.source()
+        output_file = input_file.replace(".shp", f"_MVW_{area_tolerance}.shp")
+        poly_name=polygon_layer.name()+f"_MVW_{area_tolerance}"
+        fault_path=fault_layer.source().replace(".shp", f"_sn_si_{area_tolerance}.shp")
+        fault_name=fault_layer.name()+f"_sn_si_{area_tolerance}"
+        result = vector_simplify_file_two_stage(
+                        input_file=input_file,
+                        output_file=output_file,
+                        method="modified_visvalingam_whyatt",
+                        threshold=area_tolerance,
+                        fault_file=fault_file
+                    )
+        upscaled_layer = QgsVectorLayer(
+                output_file,
+                poly_name,
+                "ogr",
+            )
+
+        # Check if layer is valid
+        if upscaled_layer.isValid():
+            QgsProject.instance().addMapLayer(upscaled_layer)
+        else:
+            print(
+                "Failed to load layer",
+                poly_name,
+            )
+        
+        upscaled_fault = QgsVectorLayer(
+                fault_path,
+                fault_name,
+                "ogr",
+            )
+
+        # Check if layer is valid
+        if upscaled_fault.isValid():
+            QgsProject.instance().addMapLayer(upscaled_fault)
+        else:
+            print(
+                "Failed to load layer",
+                fault_name,
+            )
 
     def updateMapsFields(self):
         """Update the fields in the maps layer combo box when a new layer is selected."""
@@ -901,9 +1002,10 @@ class GeoSubSampler:
         self.dockwidget.lineEdit_merge_join_angle.setToolTip(
             "Maximum angle for newly-formed angle defined by end segments"
         )
-        self.dockwidget.pushButton_fault_length.setToolTip("Add faults length\n"
-            "Does not filter data, just adds length attribute")
-        
+        self.dockwidget.pushButton_fault_length.setToolTip(
+            "Add faults length\n" "Does not filter data, just adds length attribute"
+        )
+
         self.dockwidget.pushButton_fault_graph.setToolTip(
             "Add graph data to faults\n"
             "Does not filter data, just adds graph attributes"
@@ -918,7 +1020,6 @@ class GeoSubSampler:
             "as well as Geology Map Priority Codes to be defined\n"
             "Does not filter data, just adds Strat Offset attributes"
         )
-
 
     def run(self):
         """Run method that loads and starts the plugin"""
@@ -1009,6 +1110,9 @@ class GeoSubSampler:
             )
             self.dockwidget.pushButton_fault_orientation_clusters.clicked.connect(
                 self.fault_ClusterOrientations
+            )
+            self.dockwidget.pushButton_simplifyMap.clicked.connect(
+                self.simplifyMap
             )
             self.dockwidget.mFieldComboBox_dip.setAllowEmptyFieldName(True)
             self.dockwidget.mFieldComboBox_dip.setCurrentIndex(0)
