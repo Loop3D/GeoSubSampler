@@ -697,6 +697,10 @@ class GeoSubSampler:
                     self.dockwidget.mFieldComboBox_priority_4.currentText()
                 )
 
+            if not strat_columns:
+                print("Fault Strat Offset: please select at least one priority field before running.")
+                return
+
             strat_offset_obj = FaultStratOffset()
             strat_offset_obj.CalcFaultStratOffset(
                 self.polyline_layer.source(),
