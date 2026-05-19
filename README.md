@@ -215,9 +215,11 @@ This program is free software under the MIT License.
    
 ## Author
 
-**Ranee Joshi**  
-Email: raneejoshi@gmail.com
-
+**Ranee Joshi-most calculation code**  
+Email: raneejoshi@gmail.com   
+**Mark Jessell-some calculation code & GUI**  
+Email: mark.jessell@uwa.edu.au@gmail.com   
+   
 ## Version Information
 
 - Begin Date: 2025-07-28
