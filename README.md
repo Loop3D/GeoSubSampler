@@ -167,6 +167,9 @@ Define the hierarchy for polygon merging decisions:
   - *Units*: Same as minimum diameter
   - *Description*: Increment between successive processing scales
 
+#### Modified Visvalingam-Whyatt Topological Map simplification
+- **Area Tolerance (m2)**: Area threshold for exterior vertices
+  - *Description*:  Decimates map polygons and associated faults composed of line segments to a similar curves with fewer vertices. Vertices to be removed are those whose triangular area (area defined by the vertex and its two neighbours) exceeds the threshold. When a polygon vertex is to be removed that coincides with a fault vertex, the two will be removed together to maintain their topological relationships.
 
 ## Technical Notes
 
