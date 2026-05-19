@@ -1024,7 +1024,12 @@ class GeoSubSampler:
             "as well as Geology Map Priority Codes to be defined\n"
             "Does not filter data, just adds Strat Offset attributes"
         )
-
+        self.dockwidget.lineEdit_area_tolerance.setToolTip(
+            "Tolerance for area-based filtering, in m2"
+        )
+        self.dockwidget.pushButton_simplifyMap.setToolTip(
+            "Simplify map polygons based on area tolerance, respecting fault topology"
+        )
     def run(self):
         """Run method that loads and starts the plugin"""
 
