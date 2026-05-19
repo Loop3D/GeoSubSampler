@@ -945,7 +945,7 @@ class GeoSubSampler:
         )
 
         self.dockwidget.pushButton_1o_sampling.setToolTip(
-            "First order retewntion of points based on distance and angle to contacts"
+            "First order retention of points based on distance and angle to contacts"
         )
         self.dockwidget.lineEdit_1o_distance.setToolTip(
             "Distance buffer for first order retention of points"
@@ -960,19 +960,19 @@ class GeoSubSampler:
             "Tolerance for node snapping in layer units"
         )
         self.dockwidget.mFieldComboBox_priority_1.setToolTip(
-            "Field selected for 1st priority of polygon merging"
+            "Field selected for 1st priority of polygon merging and fault strat offset"
         )
         self.dockwidget.mFieldComboBox_priority_2.setToolTip(
-            "Field selected for 2nd priority of polygon merging"
+            "Field selected for 2nd priority of polygon merging and fault strat offset"
         )
         self.dockwidget.mFieldComboBox_priority_3.setToolTip(
-            "Field selected for 3rd priority of polygon merging"
+            "Field selected for 3rd priority of polygon merging and fault strat offset"
         )
         self.dockwidget.mFieldComboBox_priority_4.setToolTip(
-            "Field selected for 4th priority of polygon merging"
+            "Field selected for 4th priority of polygon merging and fault strat offset"
         )
         self.dockwidget.mFieldComboBox_priority_5.setToolTip(
-            "Field selected for 5th priority of polygon merging"
+            "Field selected for 5th priority of polygon merging and fault strat offset"
         )
         self.dockwidget.mFieldComboBox_dyke.setToolTip("Field selected for dyke codes")
         self.dockwidget.plainTextEdit_dyke_Codes.setToolTip(
@@ -1021,7 +1021,7 @@ class GeoSubSampler:
         self.dockwidget.pushButton_fault_strat_offset.setToolTip(
             "Add stratigraphic offset data to faults\n"
             "Requires both fault and map polygon layers\n"
-            "as well as Geology Map Priority Codes to be defined\n"
+            "as well as Geology Map Priority Codes (see below) to be defined\n"
             "Does not filter data, just adds Strat Offset attributes"
         )
         self.dockwidget.lineEdit_area_tolerance.setToolTip(
