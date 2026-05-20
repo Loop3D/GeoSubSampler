@@ -500,14 +500,15 @@ class GeoSubSampler:
                 dyke_index = self.dockwidget.mFieldComboBox_dyke.currentIndex()
                 incScale = self.dockwidget.mQgsDoubleSpinBox_upinc.value()
 
+                maxScale = float(self.dockwidget.lineEdit_polygon_area.text())
                 if self.dockwidget.checkBox_series.isChecked():
-                    minScale = float(self.dockwidget.mQgsDoubleSpinBox_upinc.value())
-                    maxScale = float(self.dockwidget.lineEdit_polygon_area.text())
-                else:
-                    minScale = float(self.dockwidget.lineEdit_polygon_area.text())
-                    maxScale = float(self.dockwidget.lineEdit_polygon_area.text())
+                    minScale = 0.0
 
-                for upScale in np.arange(0.0, maxScale + 0.001, incScale):
+                else:
+                    incScale = maxScale 
+                    minScale = maxScale
+
+                for upScale in np.arange(minScale, maxScale + 0.001, incScale):
                     min_area_threshold = ((upScale / 2) ** 2) * np.pi
                     parameter = str(upScale)
                     crs = self.polygon_layer.crs()
@@ -538,7 +539,7 @@ class GeoSubSampler:
                         )
 
                     # Convert QGIS layer to GeoPandas if first in series
-                    if upScale == 0.0:
+                    if upScale == minScale:
                         gdf = gpd.read_file(self.polygon_layer.source())
 
                     # Handle dykes special case
@@ -556,7 +557,7 @@ class GeoSubSampler:
                         )
                         gdf = triangulator.triangulate_polygons(target_ids=dyke_codes)
 
-                    # Create an instance of StructuralOrientationSubSampler
+                    # Create an instance of StructuralPolygonSubSampler
                     polygonSubsampler = StructuralPolygonSubSampler(gdf)
                     # Modified parameter order: stratigraphic fields come before lithological field
                     output_gdf = polygonSubsampler.clean_small_polygons_and_holes_new(
