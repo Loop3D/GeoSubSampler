@@ -134,69 +134,43 @@ class FaultLineMerger:
     def calculate_join_angle_acb(
         self, line1: LineString, line2: LineString, endpoint1: str, endpoint2: str
     ) -> float:
-        """
-        Calculate the angle ACB at the common node C.
-        A is the adjacent node in line1, C is the common node, B is the adjacent node in line2.
+        """Calculate the angle ACB at the common node C (public API kept for compatibility)."""
+        return self._calculate_join_angle_from_coords(
+            list(line1.coords), list(line2.coords), endpoint1, endpoint2
+        )
 
-        Returns:
-        Angle ACB in degrees
-        """
-        coords1 = list(line1.coords)
-        coords2 = list(line2.coords)
-
-        # Get the three points: A, C, B
+    def _calculate_join_angle_from_coords(
+        self, coords1, coords2, endpoint1: str, endpoint2: str
+    ) -> float:
+        """Calculate angle ACB from pre-fetched coordinate lists."""
         if endpoint1 == "start" and endpoint2 == "start":
-            # Common node C is at start of both lines
-            C = coords1[0]  # Common node
-            A = coords1[1] if len(coords1) > 1 else coords1[0]  # Next node in line1
-            B = coords2[1] if len(coords2) > 1 else coords2[0]  # Next node in line2
+            C = coords1[0]
+            A = coords1[1] if len(coords1) > 1 else coords1[0]
+            B = coords2[1] if len(coords2) > 1 else coords2[0]
         elif endpoint1 == "start" and endpoint2 == "end":
-            # Common node C is at start of line1 and end of line2
-            C = coords1[0]  # Common node
-            A = coords1[1] if len(coords1) > 1 else coords1[0]  # Next node in line1
-            B = (
-                coords2[-2] if len(coords2) > 1 else coords2[-1]
-            )  # Previous node in line2
+            C = coords1[0]
+            A = coords1[1] if len(coords1) > 1 else coords1[0]
+            B = coords2[-2] if len(coords2) > 1 else coords2[-1]
         elif endpoint1 == "end" and endpoint2 == "start":
-            # Common node C is at end of line1 and start of line2
-            C = coords1[-1]  # Common node
-            A = (
-                coords1[-2] if len(coords1) > 1 else coords1[-1]
-            )  # Previous node in line1
-            B = coords2[1] if len(coords2) > 1 else coords2[0]  # Next node in line2
-        else:  # endpoint1 == 'end' and endpoint2 == 'end'
-            # Common node C is at end of both lines
-            C = coords1[-1]  # Common node
-            A = (
-                coords1[-2] if len(coords1) > 1 else coords1[-1]
-            )  # Previous node in line1
-            B = (
-                coords2[-2] if len(coords2) > 1 else coords2[-1]
-            )  # Previous node in line2
+            C = coords1[-1]
+            A = coords1[-2] if len(coords1) > 1 else coords1[-1]
+            B = coords2[1] if len(coords2) > 1 else coords2[0]
+        else:
+            C = coords1[-1]
+            A = coords1[-2] if len(coords1) > 1 else coords1[-1]
+            B = coords2[-2] if len(coords2) > 1 else coords2[-1]
 
-        # Calculate direction vectors CA and CB
-        CA = (A[0] - C[0], A[1] - C[1])
-        CB = (B[0] - C[0], B[1] - C[1])
+        CAx, CAy = A[0] - C[0], A[1] - C[1]
+        CBx, CBy = B[0] - C[0], B[1] - C[1]
 
-        # Calculate magnitudes
-        mag_CA = math.sqrt(CA[0] ** 2 + CA[1] ** 2)
-        mag_CB = math.sqrt(CB[0] ** 2 + CB[1] ** 2)
+        mag_CA = math.hypot(CAx, CAy)
+        mag_CB = math.hypot(CBx, CBy)
 
         if mag_CA == 0 or mag_CB == 0:
-            return 180.0  # Default to straight line if no length
+            return 180.0
 
-        # Calculate dot product
-        dot_product = CA[0] * CB[0] + CA[1] * CB[1]
-
-        # Calculate cosine of angle
-        cos_angle = dot_product / (mag_CA * mag_CB)
-        cos_angle = max(-1.0, min(1.0, cos_angle))  # Clamp to valid range
-
-        # Calculate angle in degrees
-        angle_rad = math.acos(cos_angle)
-        angle_deg = math.degrees(angle_rad)
-
-        return angle_deg
+        cos_angle = max(-1.0, min(1.0, (CAx * CBx + CAy * CBy) / (mag_CA * mag_CB)))
+        return math.degrees(math.acos(cos_angle))
 
     def lines_can_merge(
         self, line1: LineString, line2: LineString, endpoint1: str, endpoint2: str
@@ -211,26 +185,26 @@ class FaultLineMerger:
         Returns:
         (can_merge: bool, straightness_score: float)
         """
-        # Get endpoint coordinates
         coords1 = list(line1.coords)
         coords2 = list(line2.coords)
 
+        # Extract endpoints and compute angles directly from cached coords
         if endpoint1 == "start":
-            p1 = Point(coords1[0])
-            angle1 = self.get_line_angle(line1, from_end=False)
+            px1, py1 = coords1[0]
+            angle1 = math.atan2(coords1[1][1] - coords1[0][1], coords1[1][0] - coords1[0][0]) if len(coords1) >= 2 else 0.0
         else:
-            p1 = Point(coords1[-1])
-            angle1 = self.get_line_angle(line1, from_end=True)
+            px1, py1 = coords1[-1]
+            angle1 = math.atan2(coords1[-1][1] - coords1[-2][1], coords1[-1][0] - coords1[-2][0]) if len(coords1) >= 2 else 0.0
 
         if endpoint2 == "start":
-            p2 = Point(coords2[0])
-            angle2 = self.get_line_angle(line2, from_end=False)
+            px2, py2 = coords2[0]
+            angle2 = math.atan2(coords2[1][1] - coords2[0][1], coords2[1][0] - coords2[0][0]) if len(coords2) >= 2 else 0.0
         else:
-            p2 = Point(coords2[-1])
-            angle2 = self.get_line_angle(line2, from_end=True)
+            px2, py2 = coords2[-1]
+            angle2 = math.atan2(coords2[-1][1] - coords2[-2][1], coords2[-1][0] - coords2[-2][0]) if len(coords2) >= 2 else 0.0
 
-        # Check distance
-        distance = p1.distance(p2)
+        # Check distance without creating Point objects
+        distance = math.hypot(px2 - px1, py2 - py1)
         if distance > self.distance_tolerance:
             return False, float("inf")
 
@@ -243,14 +217,12 @@ class FaultLineMerger:
         if min_angle_diff > self.angle_tolerance:
             return False, float("inf")
 
-        # NEW: Check the angle ACB at the join point
-        join_angle = self.calculate_join_angle_acb(line1, line2, endpoint1, endpoint2)
+        # Check the angle ACB at the join point (pass cached coords to avoid re-reading)
+        join_angle = self._calculate_join_angle_from_coords(coords1, coords2, endpoint1, endpoint2)
 
         if join_angle < self.min_join_angle:
-            return False, float("inf")  # Reject sharp angles at the join
+            return False, float("inf")
 
-        # Calculate straightness score (lower is better)
-        # Combines distance and angle penalties
         angle_penalty = (180.0 - join_angle) / (180.0 - self.min_join_angle)
         straightness_score = (
             distance
@@ -294,12 +266,13 @@ class FaultLineMerger:
 
     def merge_fault_lines(self, lines: List[LineString]) -> List[LineString]:
         """
-        Working merging algorithm with simple optimization.
+        Merging algorithm: collects all non-conflicting merges in one pass, applies
+        them all at once, then rebuilds the spatial index once per pass rather than
+        once per merge.
 
         Returns:
         List of merged LineString geometries
         """
-        # Create working copy
         working_lines = lines.copy()
 
         changes_made = True
@@ -308,58 +281,48 @@ class FaultLineMerger:
         while changes_made and len(working_lines) > 1:
             changes_made = False
             iteration += 1
-            if iteration % 100 == 0:
+            if iteration % 10 == 0:
                 print(f"Iteration {iteration}: Processing {len(working_lines)} lines")
 
-            # Rebuild spatial index for current lines
+            # Build spatial index once per pass
             spatial_tree, indexed_lines = self.build_spatial_index(working_lines)
 
-            # Simple optimization: process larger indices first to minimize index shifting
-            # when we remove elements
+            consumed = set()   # indices merged away this pass
+            new_lines = []     # replacement lines produced this pass
+
             for i in range(len(working_lines) - 1, -1, -1):
-                if i >= len(working_lines):  # Safety check
+                if i in consumed:
                     continue
 
-                target_line = working_lines[i]
-
-                # Find merge candidates
                 candidates = self.find_merge_candidates(i, working_lines, spatial_tree)
 
-                if candidates:
-                    # Sort by straightness score (best first)
-                    candidates.sort(key=lambda x: x[3])
+                # Filter out any candidate whose line was already consumed this pass
+                candidates = [c for c in candidates if c[0] not in consumed]
 
-                    # Take the best candidate
-                    best_candidate = candidates[0]
-                    candidate_idx, endpoint1, endpoint2, score = best_candidate
+                if not candidates:
+                    continue
 
-                    # Skip if candidate index is out of range (shouldn't happen but safety first)
-                    if candidate_idx >= len(working_lines):
-                        continue
+                candidates.sort(key=lambda x: x[3])
+                candidate_idx, endpoint1, endpoint2, score = candidates[0]
 
-                    # Merge the lines
-                    candidate_line = working_lines[candidate_idx]
-                    merged_line = self.merge_two_lines(
-                        target_line, candidate_line, endpoint1, endpoint2
-                    )
+                if candidate_idx >= len(working_lines):
+                    continue
 
-                    # Remove old lines and add merged line
-                    # Remove higher index first to maintain correct indices
-                    if candidate_idx > i:
-                        working_lines.pop(candidate_idx)
-                        working_lines.pop(i)
-                    else:
-                        working_lines.pop(i)
-                        working_lines.pop(candidate_idx)
+                merged_line = self.merge_two_lines(
+                    working_lines[i], working_lines[candidate_idx], endpoint1, endpoint2
+                )
 
-                    working_lines.append(merged_line)
+                consumed.add(i)
+                consumed.add(candidate_idx)
+                new_lines.append(merged_line)
+                changes_made = True
 
-                    changes_made = True
-                    if i % 100 == 0:
-                        print(f"  Merged lines: {len(working_lines)} remaining")
-                    break  # Restart the loop
+            if consumed:
+                working_lines = [l for idx, l in enumerate(working_lines) if idx not in consumed]
+                working_lines.extend(new_lines)
+                print(f"  Pass {iteration}: {len(consumed)//2} merges → {len(working_lines)} lines remaining")
 
-        print(f"Merging complete after {iteration} iterations")
+        print(f"Merging complete after {iteration} passes")
         print(f"Final result: {len(working_lines)} lines")
 
         return working_lines

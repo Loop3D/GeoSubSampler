@@ -55,7 +55,8 @@ from .resources import *
 # Import the code for the DockWidget
 from .GeoSubSampler_dockwidget import GeoSubSamplerDockWidget
 import os.path
-from .calcs.StructuralOrientationSubSampler import StructuralOrientationSubSampler
+import tempfile
+import shutil
 from .calcs.StructuralPolygonSubSampler import StructuralPolygonSubSampler
 from .calcs.PolygonTriangulator import PolygonTriangulator
 from .calcs.FaultLineMerger import FaultLineMerger
@@ -63,7 +64,8 @@ from .calcs.FaultLengths import FaultLengths
 from .calcs.FaultsGraph import FaultsGraph
 from .calcs.FaultStratOffset import FaultStratOffset
 from .calcs.FaultClusterOrientation import FaultsOrientations
-from .calcs.FirstOrderOrientation import SubsamplingEngine  
+from .calcs.FirstOrderOrientation import SubsamplingEngine, save_grid_to_shapefile
+from .calcs.TopferPillewizer import topfer_count, scale_iterations, scale_points_tp, scale_lines_tp, scale_polygons_tp
 from .calcs.PolygonSimplification import SimplificationEngine, vector_simplify_file_two_stage
 import geopandas as gpd
 import os
@@ -280,15 +282,23 @@ class GeoSubSampler:
                 dip_col = gdf.columns[1]
                 dip_dir_col = gdf.columns[2]
 
-            if self.dockwidget.checkBox_dip_dir.isChecked():
-                dip_convention = "dip_direction"
-            else:
-                dip_convention = "strike"
+            # Add coordinate columns from geometry (engine needs these for grid operations)
+            gdf = gdf.copy()
+            gdf['EASTING'] = gdf.geometry.x
+            gdf['NORTHING'] = gdf.geometry.y
 
-            # Create an instance of StructuralOrientationSubSampler
-            return StructuralOrientationSubSampler(
-                gdf, dip_col, dip_dir_col, dip_convention
+            # If input is strike, convert to dip direction (dip_dir = strike - 90)
+            if not self.dockwidget.checkBox_dip_dir.isChecked():
+                gdf['_eff_dipdir'] = (gdf[dip_dir_col].astype(float) - 90) % 360
+                eff_dipdir_col = '_eff_dipdir'
+            else:
+                eff_dipdir_col = dip_dir_col
+
+            engine = SubsamplingEngine(
+                dip=dip_col, dipdir=eff_dipdir_col,
+                easting='EASTING', northing='NORTHING'
             )
+            return (gdf, engine, dip_col, dip_dir_col)
         else:
             self.iface.messageBar().pushMessage(
                 "Sorry, only layers saved to disk as a shapefile can be processed!",
@@ -346,99 +356,309 @@ class GeoSubSampler:
         QgsProject.instance().addMapLayer(upscaled_layer)
 
     def decimation(self):
-        # Create an instance of StructuralOrientationSubSampler
-        pointSubsampler = self.setUpPointSampler()
-
-        if pointSubsampler:
-            n = int(self.dockwidget.lineEdit_rate.text())
-
-            # Perform decimation subsampling
-            gdf2 = pointSubsampler.decimation(n=n)
-
-            # Write GeoPandas back to file and reload
-            self.finalisePointSampler(gdf2, self.points_layer, "decimate", n)
+        result = self.setUpPointSampler()
+        if not result:
+            return
+        gdf, engine, dip_col, dip_dir_col = result
+        n = int(self.dockwidget.lineEdit_rate.text())
+        tmpdir = tempfile.mkdtemp()
+        try:
+            gdf2 = engine.decimation(gdf, n=n, path_out=tmpdir)
+            gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        gdf2 = gdf2.drop(columns=[c for c in ['EASTING', 'NORTHING', '_eff_dipdir'] if c in gdf2.columns])
+        self.finalisePointSampler(gdf2, self.points_layer, "decimate", n)
 
     def stochastic(self):
-        # Create an instance of StructuralOrientationSubSampler
-        pointSubsampler = self.setUpPointSampler(False)
-
-        if pointSubsampler:
-            retain_percentage = float(self.dockwidget.mQgsDoubleSpinBox_percent.value())
-
-            # Perform stochastic subsampling
-            gdf2 = pointSubsampler.stochastic_subsampling(
-                retain_percentage=retain_percentage,
-                random_state=random.seed(int(time.time())),
-            )
-
-            # Write GeoPandas back to file and reload
-            self.finalisePointSampler(
-                gdf2, self.points_layer, "stochastic", retain_percentage
-            )
+        result = self.setUpPointSampler(False)
+        if not result:
+            return
+        gdf, engine, dip_col, dip_dir_col = result
+        retain_percentage = float(self.dockwidget.mQgsDoubleSpinBox_percent.value())
+        frac = retain_percentage / 100.0
+        tmpdir = tempfile.mkdtemp()
+        try:
+            gdf2 = engine.stochastic(gdf, frac=frac, random_state=int(time.time()),
+                                     path_out=tmpdir)
+            gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        gdf2 = gdf2.drop(columns=[c for c in ['EASTING', 'NORTHING', '_eff_dipdir'] if c in gdf2.columns])
+        self.finalisePointSampler(gdf2, self.points_layer, "stochastic", retain_percentage)
 
     def gridCellAveraging(self):
-        # Create an instance of StructuralOrientationSubSampler
-        pointSubsampler = self.setUpPointSampler()
-
-        if pointSubsampler:
-            grid_size = float(self.dockwidget.lineEdit_grid_size.text())
-            self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
-
-            crs = self.point_layer.crs()
-            if crs.isGeographic():
-                grid_size = grid_size / 110000
-
-            # Perform grid subsampling
-            gdf2 = pointSubsampler.gridCellAveraging(grid_size=grid_size)
-
-            # Write GeoPandas back to file and reload
-            self.finalisePointSampler(
-                gdf2, self.points_layer, "gridCellAveraging", grid_size
-            )
+        result = self.setUpPointSampler()
+        if not result:
+            return
+        gdf, engine, dip_col, dip_dir_col = result
+        grid_size = float(self.dockwidget.lineEdit_grid_size.text())
+        self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
+        if self.point_layer.crs().isGeographic():
+            grid_size = grid_size / 110000
+        bounds = gdf.total_bounds
+        min_x, max_x = int(bounds[0]), int(bounds[2]) + 1
+        min_y, max_y = int(bounds[1]), int(bounds[3]) + 1
+        tmpdir = tempfile.mkdtemp()
+        try:
+            file = engine.gridcell_average(gdf, min_x, max_x, min_y, max_y,
+                                           n=grid_size, path_out=tmpdir)
+            gdf2 = save_grid_to_shapefile(tmpdir, file)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        if gdf2 is not None:
+            gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
+            gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
+                columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
+            self.finalisePointSampler(gdf2, self.points_layer, "gridCellAveraging", grid_size)
 
     def kent(self):
-        # Create an instance of StructuralOrientationSubSampler
-        pointSubsampler = self.setUpPointSampler()
-
-        if pointSubsampler:
-            grid_size = float(self.dockwidget.lineEdit_grid_size_kent.text())
-            self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
-
-            crs = self.point_layer.crs()
-            if crs.isGeographic():
-                grid_size = grid_size / 110000
-
-            # Perform grid subsampling
-            gdf2 = pointSubsampler.spherical_statistics_kent(grid_size=grid_size)
-
-            # Write GeoPandas back to file and reload
-            self.finalisePointSampler(
-                gdf2, self.points_layer, "grid_cell_kent", grid_size
-            )
+        result = self.setUpPointSampler()
+        if not result:
+            return
+        gdf, engine, dip_col, dip_dir_col = result
+        grid_size = float(self.dockwidget.lineEdit_grid_size_kent.text())
+        self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
+        if self.point_layer.crs().isGeographic():
+            grid_size = grid_size / 110000
+        bounds = gdf.total_bounds
+        min_x, max_x = int(bounds[0]), int(bounds[2]) + 1
+        min_y, max_y = int(bounds[1]), int(bounds[3]) + 1
+        tmpdir = tempfile.mkdtemp()
+        try:
+            file = engine.spherical_kent(gdf, min_x, max_x, min_y, max_y,
+                                         n=grid_size, path_out=tmpdir)
+            gdf2 = save_grid_to_shapefile(tmpdir, file)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        if gdf2 is not None:
+            gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
+            gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
+                columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
+            self.finalisePointSampler(gdf2, self.points_layer, "grid_cell_kent", grid_size)
 
     def kentOutlier(self):
-        # Create an instance of StructuralOrientationSubSampler
-        pointSubsampler = self.setUpPointSampler()
+        result = self.setUpPointSampler()
+        if not result:
+            return
+        gdf, engine, dip_col, dip_dir_col = result
+        grid_size = float(self.dockwidget.lineEdit_grid_size_kent_2.text())
+        self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
+        if self.point_layer.crs().isGeographic():
+            grid_size = grid_size / 110000
+        bounds = gdf.total_bounds
+        min_x, max_x = int(bounds[0]), int(bounds[2]) + 1
+        min_y, max_y = int(bounds[1]), int(bounds[3]) + 1
+        tmpdir = tempfile.mkdtemp()
+        try:
+            file = engine.outlier_removal(gdf, min_x, max_x, min_y, max_y,
+                                          n=grid_size, path_out=tmpdir)
+            gdf2 = save_grid_to_shapefile(tmpdir, file)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        if gdf2 is not None:
+            gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
+            gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
+                columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
+            self.finalisePointSampler(gdf2, self.points_layer, "grid_cell_kentOutlier", grid_size)
 
-        if pointSubsampler:
-            grid_size = float(self.dockwidget.lineEdit_grid_size_kent_2.text())
-            self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
+    def subsamplePoints(self):
+        if self.dockwidget.radioButton_stochastic.isChecked():
+            self.stochastic()
+        elif self.dockwidget.radioButton_gsa.isChecked():
+            self.gridCellAveraging()
+        elif self.dockwidget.radioButton_kent.isChecked():
+            self.kent()
+        elif self.dockwidget.radioButton_kent_outlier.isChecked():
+            self.kentOutlier()
 
-            crs = self.point_layer.crs()
+    def processFaults(self):
+        if self.dockwidget.radioButton_fault_length.isChecked():
+            self.fault_Lengths()
+        elif self.dockwidget.radioButton_fault_graph.isChecked():
+            self.fault_Graph()
+        elif self.dockwidget.radioButton_fault_strat_offset.isChecked():
+            self.fault_strat_offset()
+        elif self.dockwidget.radioButton_fault_clusters.isChecked():
+            self.fault_ClusterOrientations()
+
+    def topferPillewizer(self):
+        """
+        Apply Töpfer & Pillewizer (1966) scaling to all available layers.
+
+        TN = ON * (OS/TS)^(x/2)   x=1 points, x=2 lines, x=3 polygons
+
+        The OS/TS ratio and optional increment are read from the T&P group.
+        If increment < ratio the method iterates through intermediate ratios
+        with step sizes growing by 1.5× each time.
+        """
+        try:
+            ratio     = float(self.dockwidget.lineEdit_tp_ratio.text())
+            increment = float(self.dockwidget.lineEdit_tp_increment.text())
+        except ValueError:
+            self.iface.messageBar().pushMessage(
+                "T&P Scaling: enter valid numbers for ratio and increment.",
+                level=Qgis.Warning, duration=10)
+            return
+
+        if ratio <= 0 or ratio > 1:
+            self.iface.messageBar().pushMessage(
+                "T&P Scaling: OS/TS ratio must be in the range (0, 1].",
+                level=Qgis.Warning, duration=10)
+            return
+
+        iterations = scale_iterations(ratio, increment)
+
+        # --- Determine selected orientation method -----------------------
+        if self.dockwidget.radioButton_stochastic.isChecked():
+            point_method = 'stochastic'
+        elif self.dockwidget.radioButton_gsa.isChecked():
+            point_method = 'gridcell_average'
+        elif self.dockwidget.radioButton_kent.isChecked():
+            point_method = 'spherical_kent'
+        else:
+            point_method = 'outlier_removal'
+
+        # --- Determine selected fault method -----------------------------
+        if self.dockwidget.radioButton_fault_length.isChecked():
+            fault_method = 'length'
+        elif self.dockwidget.radioButton_fault_graph.isChecked():
+            fault_method = 'graph'
+        elif self.dockwidget.radioButton_fault_strat_offset.isChecked():
+            fault_method = 'strat_offset'
+        else:
+            fault_method = 'clusters'
+
+        # --- Polygon parameters (shared with existing tools) -------------
+        strat1    = self.dockwidget.mFieldComboBox_priority_1.currentText()
+        strat2    = self.dockwidget.mFieldComboBox_priority_2.currentText()
+        strat3    = self.dockwidget.mFieldComboBox_priority_3.currentText()
+        strat4    = self.dockwidget.mFieldComboBox_priority_4.currentText()
+        lithoname = self.dockwidget.mFieldComboBox_priority_5.currentText()
+        dyke_field = self.dockwidget.mFieldComboBox_dyke.currentText()
+        dyke_codes = (
+            self.dockwidget.plainTextEdit_dyke_Codes.toPlainText()
+            .replace(" ", "").split(",")
+        )
+        try:
+            dist_thresh = float(self.dockwidget.lineEdit_node_tolerance.text())
+        except ValueError:
+            dist_thresh = 1.0
+
+        fault_layer   = self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
+        polygon_layer = self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
+
+        # Pre-load GeoDataFrames once; each iteration feeds into the next
+        current_fault_gdf   = None
+        current_polygon_gdf = None
+
+        if fault_layer and os.path.exists(fault_layer.source()):
+            current_fault_gdf = gpd.read_file(fault_layer.source())
+
+        if polygon_layer and os.path.exists(polygon_layer.source()):
+            current_polygon_gdf = gpd.read_file(polygon_layer.source())
+            crs = polygon_layer.crs()
             if crs.isGeographic():
-                grid_size = grid_size / 110000
+                dist_thresh = dist_thresh / 110000
 
-            outlier_threshold = float(self.dockwidget.lineEdit_kent_threshold.text())
+        # Points: set up engine and columns once; chain the GDF across iterations
+        current_pt_gdf  = None
+        pt_engine       = None
+        pt_dip_col      = None
+        pt_dip_dir_col  = None
+        pt_result = self.setUpPointSampler()
+        if pt_result:
+            current_pt_gdf, pt_engine, pt_dip_col, pt_dip_dir_col = pt_result
 
-            # Perform grid subsampling
-            gdf2 = pointSubsampler.outlier_removal(
-                grid_size=grid_size, outlier_threshold=outlier_threshold
-            )
+        try:
+            grid_sz = float(self.dockwidget.lineEdit_grid_size.text())
+        except ValueError:
+            grid_sz = 5000.0
 
-            # Write GeoPandas back to file and reload
-            self.finalisePointSampler(
-                gdf2, self.points_layer, "grid_cell_kentOutlier", grid_size
-            )
+        # ---- Iterate over ratios ----------------------------------------
+        # Each step uses output of the previous step as its input.
+        # The relative ratio at step i is iter_ratio / prev_ratio so that
+        # cumulative reduction matches the absolute target ratio.
+        prev_ratio = 1.0
+        for iter_ratio in iterations:
+            step_ratio = iter_ratio / prev_ratio
+            prev_ratio = iter_ratio
+            ratio_tag  = f"{iter_ratio:.6f}".rstrip('0').rstrip('.')
+
+            # --- Points ---
+            if current_pt_gdf is not None:
+                pt_scaled = scale_points_tp(
+                    current_pt_gdf, step_ratio, pt_engine, point_method,
+                    pt_dip_col, pt_dip_dir_col, grid_sz)
+
+                # Update chained GDF: re-derive coordinate columns from geometry
+                current_pt_gdf = pt_scaled.copy()
+                current_pt_gdf['EASTING']  = current_pt_gdf.geometry.x
+                current_pt_gdf['NORTHING'] = current_pt_gdf.geometry.y
+                if not self.dockwidget.checkBox_dip_dir.isChecked():
+                    current_pt_gdf['_eff_dipdir'] = (
+                        current_pt_gdf[pt_dip_dir_col].astype(float) - 90) % 360
+
+                # Drop internal helper columns for the saved file
+                drop = [c for c in ['EASTING', 'NORTHING', '_eff_dipdir']
+                        if c in pt_scaled.columns]
+                if drop:
+                    pt_scaled = pt_scaled.drop(columns=drop)
+
+                self.finalisePointSampler(
+                    pt_scaled, self.points_layer, f"tp_{ratio_tag}")
+
+            # --- Lines ---
+            if current_fault_gdf is not None:
+                ln_scaled = scale_lines_tp(current_fault_gdf, step_ratio, fault_method)
+                current_fault_gdf = ln_scaled
+                layer_path = os.path.dirname(fault_layer.source())
+                out_name   = f"{fault_layer.name()}_tp_{ratio_tag}.shp"
+                out_path   = os.path.join(layer_path, out_name)
+                if os.path.exists(out_path):
+                    out_path = out_path.replace(
+                        '.shp', f"_{random.randint(10000,99999)}.shp")
+                ln_scaled.to_file(out_path, driver='ESRI Shapefile')
+                ln_layer = QgsVectorLayer(
+                    out_path,
+                    f"{fault_layer.name()}_tp_{ratio_tag}", "ogr")
+                if ln_layer.isValid():
+                    QgsProject.instance().addMapLayer(ln_layer)
+
+            # --- Polygons ---
+            if current_polygon_gdf is not None:
+                try:
+                    poly_scaled = scale_polygons_tp(
+                        current_polygon_gdf, step_ratio,
+                        StructuralPolygonSubSampler,
+                        distance_threshold=dist_thresh,
+                        lithoname=lithoname or None,
+                        strat1=strat1 or None,
+                        strat2=strat2 or None,
+                        strat3=strat3 or None,
+                        strat4=strat4 or None,
+                        dyke_field=dyke_field or None,
+                        dyke_codes=dyke_codes if dyke_field else None,
+                        triangulator_class=(
+                            PolygonTriangulator if dyke_field else None),
+                    )
+                    current_polygon_gdf = poly_scaled
+                except Exception as exc:
+                    print(f"T&P polygon scaling error at ratio {iter_ratio}: {exc}")
+                    poly_scaled = current_polygon_gdf.copy()
+
+                layer_path = os.path.dirname(polygon_layer.source())
+                out_name   = f"{polygon_layer.name()}_tp_{ratio_tag}.shp"
+                out_path   = os.path.join(layer_path, out_name)
+                if os.path.exists(out_path):
+                    out_path = out_path.replace(
+                        '.shp', f"_{random.randint(10000,99999)}.shp")
+                poly_scaled.to_file(out_path, driver='ESRI Shapefile')
+                poly_layer = QgsVectorLayer(
+                    out_path,
+                    f"{polygon_layer.name()}_tp_{ratio_tag}", "ogr")
+                if poly_layer.isValid():
+                    QgsProject.instance().addMapLayer(poly_layer)
 
     def firstOrder(self):
         self.polygon_layer = (
@@ -476,7 +696,7 @@ class GeoSubSampler:
 
                 # Write GeoPandas back to file and reload
                 self.finalisePointSampler(
-                    output_gdf, self.polygon_layer, f"first_order_{int(distance_threshold)}_{int(angle_threshold)}")
+                    output_gdf, self.point_layer, f"first_order_{int(distance_threshold)}_{int(angle_threshold)}")
     def minPolyArea(self):
         self.polygon_layer = (
             self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
@@ -914,35 +1134,32 @@ class GeoSubSampler:
         self.dockwidget.checkBox_dip_dir.setToolTip(
             "Dip Direction used instead of Strike \nProbably not needed?"
         )
-        """self.dockwidget.pushButton_decimation.setToolTip(
-                "Simple point order decimation of points"
-            )
-            self.dockwidget.lineEdit_rate.setToolTip(
-                "Keep every nth point, where n is the value entered here"
-            )"""
-        self.dockwidget.pushButton_stochastic.setToolTip(
-            "Keep a randomly selected percentage of points "
+        self.dockwidget.radioButton_stochastic.setToolTip(
+            "Keep a randomly selected percentage of points"
         )
         self.dockwidget.mQgsDoubleSpinBox_percent.setToolTip(
             "Percentage of points to keep, between 0 and 100"
         )
-        self.dockwidget.pushButton_gridCellAveraging.setToolTip(
+        self.dockwidget.radioButton_gsa.setToolTip(
             "Grid Cell Averaging of points"
         )
         self.dockwidget.lineEdit_grid_size.setToolTip(
             "Grid size in layer units for cell averaging"
         )
-        self.dockwidget.pushButton_kent.setToolTip(
+        self.dockwidget.radioButton_kent.setToolTip(
             "Grid Cell Averaging of points using Kent statistics"
         )
         self.dockwidget.lineEdit_grid_size_kent.setToolTip(
             "Grid size in layer units for cell averaging using Kent statistics"
         )
-        self.dockwidget.pushButton_kentOutlier.setToolTip(
-            "Grid size in layer units for cell averaging using Kent statistics removing biggest outlier"
+        self.dockwidget.radioButton_kent_outlier.setToolTip(
+            "Grid Cell Averaging using Kent statistics, removing biggest outlier"
         )
         self.dockwidget.lineEdit_grid_size_kent_2.setToolTip(
-            "Threshold of points to remove ???"
+            "Grid size in layer units for Kent outlier averaging"
+        )
+        self.dockwidget.pushButton_subsample_points.setToolTip(
+            "Run the selected subsampling method on the point layer"
         )
 
         self.dockwidget.pushButton_1o_sampling.setToolTip(
@@ -989,9 +1206,6 @@ class GeoSubSampler:
             "Increment for arithmetic series of maps"
         )
         self.dockwidget.pushButton_minPolyArea.setToolTip("Rescale map polygons")
-        self.dockwidget.mMapLayerComboBox_maps_polylines.setToolTip(
-            "Fault polyline layer selected for processing"
-        )
         self.dockwidget.mMapLayerComboBox_fault_polylines.setToolTip(
             "Fault polyline layer selected for processing"
         )
@@ -1007,23 +1221,39 @@ class GeoSubSampler:
         self.dockwidget.lineEdit_merge_join_angle.setToolTip(
             "Maximum angle for newly-formed angle defined by end segments"
         )
-        self.dockwidget.pushButton_fault_length.setToolTip(
-            "Add faults length\n" "Does not filter data, just adds length attribute"
+        self.dockwidget.radioButton_fault_length.setToolTip(
+            "Add fault length attribute\n"
+            "Does not filter data, just adds length attribute"
         )
-
-        self.dockwidget.pushButton_fault_graph.setToolTip(
+        self.dockwidget.radioButton_fault_graph.setToolTip(
             "Add graph data to faults\n"
             "Does not filter data, just adds graph attributes"
         )
-        self.dockwidget.pushButton_fault_orientation_clusters.setToolTip(
+        self.dockwidget.radioButton_fault_clusters.setToolTip(
             "Add suite of orientation cluster data to faults (2-7 clusters)\n"
             "Does not filter data, just adds cluster attributes"
         )
-        self.dockwidget.pushButton_fault_strat_offset.setToolTip(
+        self.dockwidget.radioButton_fault_strat_offset.setToolTip(
             "Add stratigraphic offset data to faults\n"
             "Requires both fault and map polygon layers\n"
             "as well as Geology Map Priority Codes (see below) to be defined\n"
             "Does not filter data, just adds Strat Offset attributes"
+        )
+        self.dockwidget.pushButton_process_faults.setToolTip(
+            "Run the selected fault attribute method"
+        )
+        self.dockwidget.lineEdit_tp_ratio.setToolTip(
+            "OS/TS ratio — e.g. 0.1 for going from 1:50 000 to 1:500 000"
+        )
+        self.dockwidget.lineEdit_tp_increment.setToolTip(
+            "Fractional reduction per step (0–1).\n"
+            "Step n ratio = (1 - increment)^n\n"
+            "e.g. increment=0.1 → steps 0.9, 0.81, 0.729 …\n"
+            "Stops after the first step that drops below the OS/TS ratio."
+        )
+        self.dockwidget.pushButton_tp_run.setToolTip(
+            "Apply Töpfer & Pillewizer scaling to all selected layers.\n"
+            "Uses the orientation and fault methods selected above."
         )
         self.dockwidget.lineEdit_area_tolerance.setToolTip(
             "Tolerance for area-based filtering, in m2"
@@ -1076,9 +1306,7 @@ class GeoSubSampler:
             self.dockwidget.mMapLayerComboBox_maps_polygons.setFilters(
                 QgsMapLayerProxyModel.PolygonLayer
             )
-            self.dockwidget.mMapLayerComboBox_maps_polylines.setFilters(
-                QgsMapLayerProxyModel.LineLayer
-            )
+
             self.dockwidget.mMapLayerComboBox_fault_polylines.setFilters(
                 QgsMapLayerProxyModel.LineLayer
             )
@@ -1099,13 +1327,7 @@ class GeoSubSampler:
                 self.updateMapsFields
             )
 
-            # self.dockwidget.pushButton_decimation.clicked.connect(self.decimation)
-            self.dockwidget.pushButton_stochastic.clicked.connect(self.stochastic)
-            self.dockwidget.pushButton_gridCellAveraging.clicked.connect(
-                self.gridCellAveraging
-            )
-            self.dockwidget.pushButton_kent.clicked.connect(self.kent)
-            self.dockwidget.pushButton_kentOutlier.clicked.connect(self.kentOutlier)
+            self.dockwidget.pushButton_subsample_points.clicked.connect(self.subsamplePoints)
             self.dockwidget.pushButton_1o_sampling.clicked.connect(self.firstOrder)
 
             self.dockwidget.pushButton_minPolyArea.clicked.connect(self.minPolyArea)
@@ -1113,14 +1335,8 @@ class GeoSubSampler:
             self.dockwidget.pushButton_merge_segments.clicked.connect(
                 self.mergeSegments
             )
-            self.dockwidget.pushButton_fault_length.clicked.connect(self.fault_Lengths)
-            self.dockwidget.pushButton_fault_graph.clicked.connect(self.fault_Graph)
-            self.dockwidget.pushButton_fault_strat_offset.clicked.connect(
-                self.fault_strat_offset
-            )
-            self.dockwidget.pushButton_fault_orientation_clusters.clicked.connect(
-                self.fault_ClusterOrientations
-            )
+            self.dockwidget.pushButton_process_faults.clicked.connect(self.processFaults)
+            self.dockwidget.pushButton_tp_run.clicked.connect(self.topferPillewizer)
             self.dockwidget.pushButton_simplifyMap.clicked.connect(
                 self.simplifyMap
             )
