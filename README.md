@@ -171,6 +171,16 @@ Define the hierarchy for polygon merging decisions:
 - **Area Tolerance (m2)**: Area threshold for exterior vertices
   - *Description*:  Decimates map polygons and associated faults composed of line segments to a similar curves with fewer vertices. Vertices to be removed are those whose triangular area (area defined by the vertex and its two neighbours) exceeds the threshold. When a polygon vertex is to be removed that coincides with a fault vertex, the two will be removed together to maintain their topological relationships.
 
+## Töpfer-Pillewizer 1996 rescaling
+The TP scaling rule: TN = ON * (OS/TS)^(x/2)   
+- TN  — target number of objects after generalisation
+- ON  — original number of objects before generalisation
+- OS  — original map scale denominator (e.g. 50 000)
+- TS  — target map scale denominator (e.g. 500 000)
+- x   — object type: 1 = points, 2 = lines, 3 = polygons
+
+This will use the currently set parameters for each type of data to calculate a series of subsampling calculations to try to match the TP rule. The Old Scale/New Scale ratio defines the amount of subsampling, and Increment term defines how many steps (and hence sets of layers) will be calculated.   
+   
 ## Technical Notes
 
 ### Coordinate System Handling

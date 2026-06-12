@@ -776,7 +776,10 @@ class GeoSubSampler:
         # Lines and polygons chain incrementally (each step feeds the next).
         original_pt_gdf = current_pt_gdf  # never mutated
 
-        # --- Lines: ratio=1 baseline — full dataset with tp_sel_val appended ---
+        # --- Ratio=1 baseline: all layers at full extent ---
+        if original_pt_gdf is not None:
+            self.finalisePointSampler(original_pt_gdf, self.points_layer, "tp_1")
+
         if current_fault_gdf is not None:
             ln_full = scale_lines_tp(current_fault_gdf, 1.0, fault_method)
             layer_path = os.path.dirname(fault_layer.source())
@@ -789,11 +792,25 @@ class GeoSubSampler:
             ln_layer = QgsVectorLayer(out_path, f"{fault_layer.name()}_tp_1", "ogr")
             self._add_layer_with_style(ln_layer, fault_layer)
 
+        if current_polygon_gdf is not None:
+            layer_path = os.path.dirname(polygon_layer.source())
+            out_name = f"{polygon_layer.name()}_tp_1.shp"
+            out_path = os.path.join(layer_path, out_name)
+            if os.path.exists(out_path):
+                out_path = out_path.replace(
+                    '.shp', f"_{random.randint(10000,99999)}.shp")
+            current_polygon_gdf.to_file(out_path, driver='ESRI Shapefile')
+            poly_layer = QgsVectorLayer(out_path, f"{polygon_layer.name()}_tp_1", "ogr")
+            self._add_layer_with_style(poly_layer, polygon_layer)
+
         prev_ratio = 1.0
         for iter_ratio in iterations:
             step_ratio = iter_ratio / prev_ratio   # still needed for lines/polygons
             prev_ratio = iter_ratio
             ratio_tag  = f"{iter_ratio:.6f}".rstrip('0').rstrip('.')
+
+            if abs(iter_ratio - 1.0) < 1e-9:
+                continue  # ratio=1 baseline already output above
 
             # --- Points (always from original, absolute ratio) ---
             if original_pt_gdf is not None:
@@ -812,6 +829,14 @@ class GeoSubSampler:
 
             # --- Lines ---
             if current_fault_gdf is not None:
+                if fault_method == 'graph':
+                    # Removing faults changes node topology, so edge_type must be
+                    # recomputed from the surviving fault set each iteration.
+                    if 'edge_type' in current_fault_gdf.columns:
+                        current_fault_gdf = current_fault_gdf.drop(columns=['edge_type'])
+                    current_fault_gdf = self._tp_prepare_fault_attrs(
+                        current_fault_gdf, fault_method, fault_layer, polygon_layer,
+                        strat1, strat2, strat3, strat4)
                 ln_scaled = scale_lines_tp(current_fault_gdf, step_ratio, fault_method)
                 current_fault_gdf = ln_scaled
                 layer_path = os.path.dirname(fault_layer.source())

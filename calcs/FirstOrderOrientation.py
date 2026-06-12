@@ -390,8 +390,13 @@ class SubsamplingEngine:
         """
         df = self._add_direction_cosines(gpdataframe)
 
-        x = np.arange(minx, maxx, n, dtype=np.int64)
-        y = np.arange(miny, maxy, n, dtype=np.int64)
+        # Bin each point directly to its cell — O(n_points), not O(n_cells × n_points)
+        df = df[
+            (df[self.easting]  >= minx) & (df[self.easting]  < maxx) &
+            (df[self.northing] >= miny) & (df[self.northing] < maxy)
+        ].copy()
+        df['_cx'] = ((df[self.easting]  - minx) / n).astype(np.int64)
+        df['_cy'] = ((df[self.northing] - miny) / n).astype(np.int64)
 
         file = f"structure_file_gridcell_{n}"
         fieldnames = ['EASTING', 'NORTHING', 'DIP', 'DIP_DIR']
@@ -399,25 +404,16 @@ class SubsamplingEngine:
         with open(os.path.join(path_out, file + ".csv"), "w",
                   encoding="utf-8") as out:
             out.write(','.join(fieldnames) + '\n')
-            for linex in x:
-                for liney in y:
-                    grid = df.loc[
-                        (df[self.northing] >= int(liney)) &
-                        (df[self.northing] <= int(liney + n)) &
-                        (df[self.easting]  >= int(linex)) &
-                        (df[self.easting]  <= int(linex + n))
-                    ]
-                    if grid.empty:
-                        continue
-                    centx = linex + (n / 2)
-                    centy = liney + (n / 2)
-                    dip_val, dipdir_val = self._calc_mean_orientation(grid)
-                    dip_str    = ('NaN' if math.isnan(dip_val)
-                                  else str(int(dip_val)))
-                    dipdir_str = ('NaN' if math.isnan(dipdir_val)
-                                  else str(int(dipdir_val)))
-                    out.write(f"{int(centx)},{int(centy)},"
-                              f"{dip_str},{dipdir_str}\n")
+            for (cx, cy), group in df.groupby(['_cx', '_cy']):
+                centx = minx + (cx + 0.5) * n
+                centy = miny + (cy + 0.5) * n
+                dip_val, dipdir_val = self._calc_mean_orientation(group)
+                dip_str    = ('NaN' if math.isnan(dip_val)
+                              else str(int(dip_val)))
+                dipdir_str = ('NaN' if math.isnan(dipdir_val)
+                              else str(int(dipdir_val)))
+                out.write(f"{int(centx)},{int(centy)},"
+                          f"{dip_str},{dipdir_str}\n")
         return file
 
     # =========================================================================
@@ -452,8 +448,12 @@ class SubsamplingEngine:
         """
         df = self._add_direction_cosines(gpdataframe)
 
-        x = np.arange(minx, maxx, n, dtype=np.int64)
-        y = np.arange(miny, maxy, n, dtype=np.int64)
+        df = df[
+            (df[self.easting]  >= minx) & (df[self.easting]  < maxx) &
+            (df[self.northing] >= miny) & (df[self.northing] < maxy)
+        ].copy()
+        df['_cx'] = ((df[self.easting]  - minx) / n).astype(np.int64)
+        df['_cy'] = ((df[self.northing] - miny) / n).astype(np.int64)
 
         file = f"structure_file_spherical_{n}"
         fieldnames = ['EASTING', 'NORTHING', 'DIP', 'DIP_DIR',
@@ -462,32 +462,22 @@ class SubsamplingEngine:
         with open(os.path.join(path_out, file + ".csv"), "w",
                   encoding="utf-8") as out:
             out.write(','.join(fieldnames) + '\n')
-            for linex in x:
-                for liney in y:
-                    grid = df.loc[
-                        (df[self.northing] >= int(liney)) &
-                        (df[self.northing] <= int(liney + n)) &
-                        (df[self.easting]  >= int(linex)) &
-                        (df[self.easting]  <= int(linex + n))
-                    ]
-                    if grid.empty:
-                        continue
-                    centx = linex + (n / 2)
-                    centy = liney + (n / 2)
-                    dip2, dipdir2 = self._calc_mean_orientation(grid)
-                    count, kappa, beta = self._calc_kent(grid)
-                    dip2_str = (
-                        '-999' if (isinstance(dip2, float) and math.isnan(dip2))
-                        else str(int(dip2))
-                    )
-                    dipdir2_str = (
-                        '-999' if (isinstance(dipdir2, float) and
-                                   math.isnan(dipdir2))
-                        else str(int(dipdir2))
-                    )
-                    out.write(f"{int(centx)},{int(centy)},"
-                              f"{dip2_str},{dipdir2_str},"
-                              f"{int(count)},{kappa},{beta}\n")
+            for (cx, cy), group in df.groupby(['_cx', '_cy']):
+                centx = minx + (cx + 0.5) * n
+                centy = miny + (cy + 0.5) * n
+                dip2, dipdir2 = self._calc_mean_orientation(group)
+                cnt, kappa, beta = self._calc_kent(group)
+                dip2_str = (
+                    '-999' if (isinstance(dip2, float) and math.isnan(dip2))
+                    else str(int(dip2))
+                )
+                dipdir2_str = (
+                    '-999' if (isinstance(dipdir2, float) and math.isnan(dipdir2))
+                    else str(int(dipdir2))
+                )
+                out.write(f"{int(centx)},{int(centy)},"
+                          f"{dip2_str},{dipdir2_str},"
+                          f"{int(cnt)},{kappa},{beta}\n")
         return file
 
     # =========================================================================
@@ -519,8 +509,13 @@ class SubsamplingEngine:
         """
         df = self._add_direction_cosines(gdf)
 
-        x_coords = np.arange(minx, maxx, n)
-        y_coords = np.arange(miny, maxy, n)
+        df = df[
+            (df[self.easting]  >= minx) & (df[self.easting]  < maxx) &
+            (df[self.northing] >= miny) & (df[self.northing] < maxy)
+        ].copy()
+        df['_cx'] = ((df[self.easting]  - minx) / n).astype(np.int64)
+        df['_cy'] = ((df[self.northing] - miny) / n).astype(np.int64)
+
         file     = f"structure_file_outlier_{n}"
         csv_path = os.path.join(path_out, f"{file}.csv")
 
@@ -528,47 +523,28 @@ class SubsamplingEngine:
             out.write("EASTING,NORTHING,DIP,DIP_DIR,"
                       "count,kappa,beta,REMOVED_INDEX\n")
 
-            for linex in x_coords:
-                for liney in y_coords:
-                    grid = df[
-                        (df[self.northing] >= liney) &
-                        (df[self.northing] <= liney + n) &
-                        (df[self.easting]  >= linex) &
-                        (df[self.easting]  <= linex + n)
-                    ]
-                    centx = int(linex + n / 2)
-                    centy = int(liney + n / 2)
+            for (cx, cy), grid in df.groupby(['_cx', '_cy']):
+                centx = int(minx + (cx + 0.5) * n)
+                centy = int(miny + (cy + 0.5) * n)
 
-                    if len(grid) <= 3:
-                        out.write(f"{centx},{centy},-999,-999,"
-                                  f"{len(grid)},-999,-999,-1\n")
-                        continue
+                if len(grid) <= 3:
+                    continue  # skip cells too small for outlier removal
 
-                    dip0, dipdir0 = self._calc_mean_orientation(grid)
-                    _, k0, _ = self._calc_kent(grid)
+                _, k0, _ = self._calc_kent(grid)
 
-                    delta_kappas = []
-                    for idx in grid.index:
-                        temp = grid.drop(index=idx)
-                        _, k_t, _ = self._calc_kent(temp)
-                        delta_kappas.append((idx, k_t - k0))
+                delta_kappas = []
+                for idx in grid.index:
+                    temp = grid.drop(index=idx)
+                    _, k_t, _ = self._calc_kent(temp)
+                    delta_kappas.append((idx, k_t - k0))
 
-                    removed_idx, _ = max(delta_kappas, key=lambda x: x[1])
-                    final_grid = grid.drop(index=removed_idx)
-                    dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
-                    count, kappa, beta = self._calc_kent(final_grid)
-                    out.write(f"{centx},{centy},{int(dip_f)},{int(dipdir_f)},"
-                              f"{count},{kappa},{beta},{removed_idx}\n")
+                removed_idx, _ = max(delta_kappas, key=lambda x: x[1])
+                final_grid = grid.drop(index=removed_idx)
+                dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
+                cnt, kappa, beta = self._calc_kent(final_grid)
+                out.write(f"{centx},{centy},{int(dip_f)},{int(dipdir_f)},"
+                          f"{cnt},{kappa},{beta},{removed_idx}\n")
 
-        # Strip sentinel rows — final CSV contains only valid cells
-        df_clean = pd.read_csv(csv_path)
-        df_clean = df_clean[~(
-            (df_clean['DIP']   == -999) &
-            (df_clean['DIP_DIR'] == -999) &
-            (np.isclose(df_clean['kappa'].astype(float), -999)) &
-            (np.isclose(df_clean['beta'].astype(float),  -999))
-        )]
-        df_clean.to_csv(csv_path, index=False)
         return file
 
     # =========================================================================

@@ -19,6 +19,7 @@ step 1.5× the previous step size, until the target ratio is reached.
 """
 
 import math
+import os
 import tempfile
 import shutil
 
@@ -69,15 +70,32 @@ def scale_iterations(target_ratio, increment):
 # Point scaling  (x = 1)
 # ---------------------------------------------------------------------------
 
+def _count_grid(engine, method, gdf, min_x, max_x, min_y, max_y, gs):
+    """Run grid engine method at cell size gs, return number of valid output cells."""
+    tmpdir = tempfile.mkdtemp()
+    try:
+        if method == 'gridcell_average':
+            stem = engine.gridcell_average(gdf, min_x, max_x, min_y, max_y, n=gs, path_out=tmpdir)
+        elif method == 'spherical_kent':
+            stem = engine.spherical_kent(gdf, min_x, max_x, min_y, max_y, n=gs, path_out=tmpdir)
+        else:
+            stem = engine.outlier_removal(gdf, min_x, max_x, min_y, max_y, n=gs, path_out=tmpdir)
+        df = pd.read_csv(os.path.join(tmpdir, stem + '.csv'))
+        return int((df['DIP'] != -999).sum()) if not df.empty else 0
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
                     grid_size=5000):
     """
     Reduce a point GeoDataFrame to TN = ON*(OS/TS)^0.5 using the chosen method.
 
-    For stochastic the subsample is drawn directly (all original fields kept).
-    For grid-based methods an adjusted grid size is estimated from the T&P
-    target count, then the method is applied; falls back to stochastic if the
-    grid method yields an empty result.
+    ON is always the raw point count (len(gdf)).  For stochastic, the fraction
+    is drawn directly.  For grid methods, the grid cell size is found iteratively
+    so that the number of occupied cells matches TN — the analytical estimate
+    sqrt(total_area/TN) fails for non-uniform / sparse data, so a proportional
+    seed + binary search is used instead.
     """
     from .FirstOrderOrientation import save_grid_to_shapefile
     import time
@@ -87,52 +105,107 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
     if tn >= on:
         return gdf.copy()
 
-    fraction = tn / on
-
     # --- Stochastic ---
     if method == 'stochastic':
         tmpdir = tempfile.mkdtemp()
         try:
-            result = engine.stochastic(gdf, frac=fraction,
+            result = engine.stochastic(gdf, frac=tn / on,
                                        random_state=int(time.time()),
                                        path_out=tmpdir)
             return result.set_crs(gdf.crs, allow_override=True)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    # --- Grid-based: estimate new grid size so ~TN cells are populated ---
-    bounds = gdf.total_bounds          # [minx, miny, maxx, maxy]
-    total_area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
-    if total_area > 0 and tn > 0:
-        new_grid_size = max(math.sqrt(total_area / tn), 1.0)
-    else:
-        new_grid_size = grid_size / math.sqrt(fraction) if fraction > 0 else grid_size
-
+    # --- Grid methods ---
+    bounds = gdf.total_bounds
     min_x, max_x = int(bounds[0]), int(bounds[2]) + 1
     min_y, max_y = int(bounds[1]), int(bounds[3]) + 1
 
+    is_geo = gdf.crs is not None and gdf.crs.is_geographic
+    gs_ref = grid_size / 110000.0 if is_geo else float(grid_size)
+
+    def count(gs):
+        return _count_grid(engine, method, gdf, min_x, max_x, min_y, max_y, gs)
+
+    # Seed with reference count to drive proportional estimate
+    n_ref = count(gs_ref)
+    if n_ref == 0:
+        # No data at all — fall back to stochastic
+        tmpdir = tempfile.mkdtemp()
+        try:
+            result = engine.stochastic(gdf, frac=max(0.001, tn / on),
+                                       random_state=int(time.time()),
+                                       path_out=tmpdir)
+            return result.set_crs(gdf.crs, allow_override=True)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # Proportional first estimate: N ∝ 1/gs²  →  gs ∝ sqrt(1/N)
+    gs1 = gs_ref * math.sqrt(max(1, n_ref) / max(1, tn))
+    n1 = count(gs1)
+
+    tol = 0.15
+    if abs(n1 - tn) <= tol * tn:
+        gs_best = gs1
+    else:
+        # Build binary-search brackets:
+        #   fine_gs (small) → n >= tn;  coarse_gs (large) → n <= tn
+        if n1 >= tn:
+            fine_gs, fine_n = gs1, n1
+            coarse_gs = gs1 * 2
+            for _ in range(10):
+                coarse_n = count(coarse_gs)
+                if coarse_n <= tn:
+                    break
+                coarse_gs *= 2
+        else:
+            coarse_gs, coarse_n = gs1, n1
+            fine_gs = gs1 / 2
+            for _ in range(10):
+                fine_n = count(fine_gs)
+                if fine_n >= tn:
+                    break
+                fine_gs /= 2
+
+        gs_best, best_n = gs1, n1
+        for _ in range(12):
+            if coarse_gs - fine_gs < 0.1:
+                break
+            mid = (fine_gs + coarse_gs) / 2
+            mid_n = count(mid)
+            if abs(mid_n - tn) < abs(best_n - tn):
+                gs_best, best_n = mid, mid_n
+            if abs(mid_n - tn) <= tol * tn:
+                break
+            if mid_n > tn:
+                fine_gs = mid
+            else:
+                coarse_gs = mid
+
+    # Final run at best grid size
     tmpdir = tempfile.mkdtemp()
     try:
         if method == 'gridcell_average':
             stem = engine.gridcell_average(gdf, min_x, max_x, min_y, max_y,
-                                           n=new_grid_size, path_out=tmpdir)
+                                           n=gs_best, path_out=tmpdir)
         elif method == 'spherical_kent':
             stem = engine.spherical_kent(gdf, min_x, max_x, min_y, max_y,
-                                         n=new_grid_size, path_out=tmpdir)
-        else:   # outlier_removal
+                                         n=gs_best, path_out=tmpdir)
+        else:
             stem = engine.outlier_removal(gdf, min_x, max_x, min_y, max_y,
-                                          n=new_grid_size, path_out=tmpdir)
+                                          n=gs_best, path_out=tmpdir)
         result = save_grid_to_shapefile(tmpdir, stem)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     if result is not None and not result.empty:
+        result = result.rename(columns={'DIP': dip_col, 'DIP_DIR': dipdir_col}, errors='ignore')
         return result.set_crs(gdf.crs, allow_override=True)
 
     # Fallback to stochastic if grid method yielded nothing
     tmpdir = tempfile.mkdtemp()
     try:
-        result = engine.stochastic(gdf, frac=fraction,
+        result = engine.stochastic(gdf, frac=max(0.001, tn / on),
                                    random_state=int(time.time()),
                                    path_out=tmpdir)
         return result.set_crs(gdf.crs, allow_override=True)
@@ -166,6 +239,12 @@ def scale_lines_tp(gdf, ratio, method):
     """
     Reduce a line GeoDataFrame to TN = ON*(OS/TS)^1 features.
 
+    A ``tp_sel_val`` field is always appended to record the criterion used:
+      length        — geometry length
+      graph         — edge_type value  (falls back to length if field absent)
+      strat_offset  — stratigraphic-offset value  (falls back to length)
+      clusters      — cluster label  (falls back to length)
+
     Sorting rules by method:
       length        — keep longest features
       graph         — sort by edge_type rank (x-x > x-z/y-* > z-z),
@@ -177,16 +256,49 @@ def scale_lines_tp(gdf, ratio, method):
     """
     on = len(gdf)
     tn = topfer_count(on, ratio, x=2)
+
+    def _to_str(series):
+        """Convert a Series to string, replacing NaN/None with ''."""
+        return ['' if pd.isna(v) else str(v) for v in series]
+
+    # Fast path: all features kept — add fields without sorting
     if tn >= on:
-        return gdf.copy()
+        result = gdf.copy()
+        if 'line_len' not in result.columns:
+            result['line_len'] = result.geometry.length
+        if method == 'graph' and 'edge_type' in result.columns:
+            result['tp_sel_val'] = _to_str(result['edge_type'])
+        elif method == 'strat_offset':
+            strat_col = next((c for c in result.columns
+                              if 'strat' in c.lower() or 'offset' in c.lower()), None)
+            result['tp_sel_val'] = _to_str(
+                pd.to_numeric(result[strat_col], errors='coerce') if strat_col
+                else pd.Series([''] * len(result), index=result.index))
+        elif method == 'clusters':
+            cluster_col = next((c for c in result.columns
+                                if 'cluster' in c.lower()), None)
+            result['tp_sel_val'] = _to_str(result[cluster_col]) if cluster_col else ''
+        else:  # length or graph-without-edge_type
+            result['tp_sel_val'] = ('' if method == 'graph'
+                                    else _to_str(result['line_len']))
+        return result
 
     n_keep = min(tn, on)
     work = gdf.copy()
-    work['_len'] = work.geometry.length
+    # Reuse existing line_len to avoid recomputing geometry lengths on every step
+    if 'line_len' in work.columns:
+        work['_len'] = work['line_len']
+    else:
+        work['_len'] = work.geometry.length
 
     if method == 'graph' and 'edge_type' in work.columns:
         work['_rank'] = work['edge_type'].apply(_edge_type_rank)
         work = work.sort_values(['_rank', '_len'], ascending=[True, False])
+        work['tp_sel_val'] = _to_str(work['edge_type'])
+
+    elif method == 'graph':  # graph selected but edge_type column absent
+        work = work.sort_values('_len', ascending=False)
+        work['tp_sel_val'] = ''
 
     elif method == 'strat_offset':
         strat_col = next(
@@ -196,9 +308,11 @@ def scale_lines_tp(gdf, ratio, method):
         )
         if strat_col:
             work['_sort'] = pd.to_numeric(work[strat_col], errors='coerce').abs()
-            work = work.sort_values('_sort', ascending=False)
+            work = work.sort_values(['_sort', '_len'], ascending=False)
+            work['tp_sel_val'] = _to_str(pd.to_numeric(work[strat_col], errors='coerce'))
         else:
             work = work.sort_values('_len', ascending=False)
+            work['tp_sel_val'] = ''
 
     elif method == 'clusters':
         cluster_col = next(
@@ -208,11 +322,17 @@ def scale_lines_tp(gdf, ratio, method):
             sizes = work[cluster_col].value_counts()
             work['_csz'] = work[cluster_col].map(sizes)
             work = work.sort_values(['_csz', '_len'], ascending=[False, False])
+            work['tp_sel_val'] = _to_str(work[cluster_col])
         else:
             work = work.sort_values('_len', ascending=False)
+            work['tp_sel_val'] = ''
 
-    else:   # length (also fallback)
+    else:   # length
         work = work.sort_values('_len', ascending=False)
+        work['tp_sel_val'] = _to_str(work['_len'])
+
+    if 'line_len' not in work.columns:
+        work['line_len'] = work['_len']
 
     drop_cols = [c for c in ['_len', '_rank', '_sort', '_csz'] if c in work.columns]
     return work.head(n_keep).drop(columns=drop_cols).reset_index(drop=True)

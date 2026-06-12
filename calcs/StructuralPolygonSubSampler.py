@@ -153,23 +153,24 @@ class StructuralPolygonSubSampler:
                 # Direct intersection works well for most cases
                 intersection = boundary1.intersection(boundary2)
                 
-                # Calculate total length
-                if intersection.geom_type == 'LineString':
+                # Calculate total length.
+                # LinearRing arises when a polygon sits exactly inside a hole of
+                # another polygon — the shared boundary is the closed ring.
+                def _ring_or_line_length(geom):
+                    if geom.geom_type in ('LineString', 'LinearRing'):
+                        return geom.length
+                    elif geom.geom_type == 'MultiLineString':
+                        return sum(g.length for g in geom.geoms)
+                    return 0
+
+                if intersection.geom_type in ('LineString', 'LinearRing'):
                     return intersection.length
                 elif intersection.geom_type == 'MultiLineString':
                     return sum(line.length for line in intersection.geoms)
-                elif intersection.geom_type == 'Point':
-                    return 0  # Points don't contribute to length
-                elif intersection.geom_type == 'MultiPoint':
-                    return 0  # Points don't contribute to length
+                elif intersection.geom_type in ('Point', 'MultiPoint'):
+                    return 0
                 elif intersection.geom_type == 'GeometryCollection':
-                    total_length = 0
-                    for geom in intersection.geoms:
-                        if geom.geom_type == 'LineString':
-                            total_length += geom.length
-                        elif geom.geom_type == 'MultiLineString':
-                            total_length += sum(line.length for line in geom.geoms)
-                    return total_length
+                    return sum(_ring_or_line_length(g) for g in intersection.geoms)
                 else:
                     return 0
                     
@@ -507,7 +508,21 @@ class StructuralPolygonSubSampler:
                 # Merge the geometries
                 if len(geometries_to_merge) > 1:
                     merged_geom = unary_union(geometries_to_merge)
-                    
+
+                    # unary_union can return GeometryCollection for edge cases
+                    # (e.g. shared-boundary LinearRings); extract only polygon parts
+                    if merged_geom.geom_type == 'GeometryCollection':
+                        poly_parts = [g for g in merged_geom.geoms
+                                      if g.geom_type in ('Polygon', 'MultiPolygon')]
+                        if poly_parts:
+                            merged_geom = unary_union(poly_parts)
+                        else:
+                            continue  # no polygon parts; skip this merge
+
+                    # Fix any self-intersections before storing
+                    if not merged_geom.is_valid:
+                        merged_geom = merged_geom.buffer(0)
+
                     # Update the target polygon with merged geometry
                     gdf_cleaned.iloc[target_idx, gdf_cleaned.columns.get_loc('geometry')] = merged_geom
             
@@ -519,18 +534,24 @@ class StructuralPolygonSubSampler:
             else:
                 break
         
-        gdf_cleaned = filter_large_polygons(gdf_cleaned, min_area_threshold=min_area_threshold)
-
-        # Step 3: Clean up any invalid geometries
+        # Step 3: Fix any remaining invalid geometries and remove any zero-area
+        # degenerate results.  We do NOT apply filter_large_polygons here:
+        # when all input polygons are smaller than the threshold, the merge loop
+        # produces the best possible result but the merged polygons may still be
+        # below the threshold — removing them would produce an empty output.
         print("Cleaning up geometries...")
         gdf_cleaned['geometry'] = gdf_cleaned['geometry'].apply(
             lambda geom: geom.buffer(0) if not geom.is_valid else geom
         )
+        # Drop only truly degenerate (zero-area) polygons
+        gdf_cleaned = gdf_cleaned[gdf_cleaned.geometry.area > 0].reset_index(drop=True)
         
         # Print summary statistics
+        below_threshold = (gdf_cleaned.geometry.area < min_area_threshold).sum()
         print(f"\nMerge Summary:")
         print(f"Original polygons: {len(gdf)}")
         print(f"Final polygons: {len(gdf_cleaned)}")
+        print(f"  (of which {below_threshold} are still below the threshold — orphans that had no merge candidates)")
         print(f"Total polygons merged: {total_merged}")
         print(f"Merge iterations: {iteration}")
         if max_inherit_field > 0:
