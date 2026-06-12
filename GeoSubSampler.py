@@ -71,6 +71,8 @@ import geopandas as gpd
 import os
 import random
 import time
+import math
+import pandas as pd
 import numpy as np
 
 
@@ -307,6 +309,20 @@ class GeoSubSampler:
             )
             return False
 
+    def _add_layer_with_style(self, new_layer, source_layer, fail_msg=''):
+        """Add new_layer to the project and copy style from source_layer."""
+        if not new_layer.isValid():
+            print(f"Failed to load layer: {fail_msg or new_layer.name()}")
+            return
+        try:
+            from qgis.PyQt.QtXml import QDomDocument
+            doc = QDomDocument()
+            source_layer.exportNamedStyle(doc)
+            new_layer.importNamedStyle(doc)
+        except Exception:
+            pass
+        QgsProject.instance().addMapLayer(new_layer)
+
     def finalisePointSampler(self, gdf2, qgis_layer, name, param=0):
         layer_path = os.path.dirname(qgis_layer.source())
         if(param==0):
@@ -347,13 +363,8 @@ class GeoSubSampler:
             new_path, qgis_layer.name() + "_" + name +  str(param2), "ogr"
         )
 
-        # Check if layer is valid
-        if upscaled_layer.isValid():
-            QgsProject.instance().addMapLayer(upscaled_layer)
-        else:
-            print("Failed to load layer", qgis_layer.name() + "_" + name)
-
-        QgsProject.instance().addMapLayer(upscaled_layer)
+        self._add_layer_with_style(upscaled_layer, qgis_layer,
+                                   qgis_layer.name() + "_" + name)
 
     def decimation(self):
         result = self.setUpPointSampler()
@@ -387,18 +398,105 @@ class GeoSubSampler:
         gdf2 = gdf2.drop(columns=[c for c in ['EASTING', 'NORTHING', '_eff_dipdir'] if c in gdf2.columns])
         self.finalisePointSampler(gdf2, self.points_layer, "stochastic", retain_percentage)
 
+    def _count_gridcell_output(self, run_fn, gdf, min_x, max_x, min_y, max_y, cs):
+        """Run engine grid-cell method at cell size cs and return valid point count."""
+        tmpdir = tempfile.mkdtemp()
+        try:
+            file = run_fn(gdf, min_x, max_x, min_y, max_y, n=cs, path_out=tmpdir)
+            df = pd.read_csv(os.path.join(tmpdir, file + ".csv"))
+            return int((df['DIP'] != -999).sum()) if not df.empty else 0
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def _find_grid_size_for_target(self, run_fn, gdf, min_x, max_x, min_y, max_y, target_n):
+        """
+        Find the grid cell size that produces approximately target_n output points.
+
+        Strategy (Option 3):
+          1. Analytical estimate: cell_size = sqrt(area / target_n)
+          2. Proportional correction using actual vs target count
+          3. Binary search if still outside 15% tolerance
+        Returns (cell_size_in_crs_units, actual_count).
+        """
+        area = (max_x - min_x) * (max_y - min_y)
+        tol = 0.15
+
+        def count(cs):
+            n = self._count_gridcell_output(run_fn, gdf, min_x, max_x, min_y, max_y, cs)
+            print(f"  [target N] cell={cs:.2f} → {n} points")
+            return n
+
+        # Step 1: analytical estimate
+        cs1 = math.sqrt(area / max(1, target_n))
+        n1 = count(cs1)
+        if n1 == target_n or abs(n1 - target_n) <= tol * target_n:
+            return cs1, n1
+
+        # Step 2: proportional correction (count ∝ 1/cell_size²)
+        cs2 = cs1 * math.sqrt(max(1, n1) / max(1, target_n))
+        n2 = count(cs2)
+        if n2 == target_n or abs(n2 - target_n) <= tol * target_n:
+            return cs2, n2
+
+        # Step 3: binary search
+        # lo (small cell) → many points, hi (large cell) → few points
+        if cs1 < cs2:
+            lo, lo_n, hi, hi_n = cs1, n1, cs2, n2
+        else:
+            lo, lo_n, hi, hi_n = cs2, n2, cs1, n1
+
+        for _ in range(8):
+            if lo_n >= target_n:
+                break
+            lo /= 2
+            lo_n = count(lo)
+        for _ in range(8):
+            if hi_n <= target_n:
+                break
+            hi *= 2
+            hi_n = count(hi)
+
+        best_cs = cs2 if abs(n2 - target_n) < abs(n1 - target_n) else cs1
+        best_n  = n2  if abs(n2 - target_n) < abs(n1 - target_n) else n1
+
+        for _ in range(12):
+            if hi - lo < 0.1:
+                break
+            mid = (lo + hi) / 2
+            mid_n = count(mid)
+            if abs(mid_n - target_n) < abs(best_n - target_n):
+                best_cs, best_n = mid, mid_n
+            if abs(mid_n - target_n) <= tol * target_n or mid_n == target_n:
+                break
+            if mid_n > target_n:
+                lo = mid
+            else:
+                hi = mid
+
+        return best_cs, best_n
+
     def gridCellAveraging(self):
         result = self.setUpPointSampler()
         if not result:
             return
         gdf, engine, dip_col, dip_dir_col = result
-        grid_size = float(self.dockwidget.lineEdit_grid_size.text())
         self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
-        if self.point_layer.crs().isGeographic():
-            grid_size = grid_size / 110000
+        is_geographic = self.point_layer.crs().isGeographic()
         bounds = gdf.total_bounds
         min_x, max_x = int(bounds[0]), int(bounds[2]) + 1
         min_y, max_y = int(bounds[1]), int(bounds[3]) + 1
+
+        if self.dockwidget.checkBox_target_n.isChecked():
+            target_n = self.dockwidget.spinBox_target_n.value()
+            grid_size, _ = self._find_grid_size_for_target(
+                engine.gridcell_average, gdf, min_x, max_x, min_y, max_y, target_n)
+            display_size = grid_size * 110000 if is_geographic else grid_size
+            self.dockwidget.lineEdit_grid_size.setText(f"{display_size:.0f}")
+        else:
+            grid_size = float(self.dockwidget.lineEdit_grid_size.text())
+            if is_geographic:
+                grid_size = grid_size / 110000
+
         tmpdir = tempfile.mkdtemp()
         try:
             file = engine.gridcell_average(gdf, min_x, max_x, min_y, max_y,
@@ -417,13 +515,23 @@ class GeoSubSampler:
         if not result:
             return
         gdf, engine, dip_col, dip_dir_col = result
-        grid_size = float(self.dockwidget.lineEdit_grid_size_kent.text())
         self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
-        if self.point_layer.crs().isGeographic():
-            grid_size = grid_size / 110000
+        is_geographic = self.point_layer.crs().isGeographic()
         bounds = gdf.total_bounds
         min_x, max_x = int(bounds[0]), int(bounds[2]) + 1
         min_y, max_y = int(bounds[1]), int(bounds[3]) + 1
+
+        if self.dockwidget.checkBox_target_n.isChecked():
+            target_n = self.dockwidget.spinBox_target_n.value()
+            grid_size, _ = self._find_grid_size_for_target(
+                engine.spherical_kent, gdf, min_x, max_x, min_y, max_y, target_n)
+            display_size = grid_size * 110000 if is_geographic else grid_size
+            self.dockwidget.lineEdit_grid_size_kent.setText(f"{display_size:.0f}")
+        else:
+            grid_size = float(self.dockwidget.lineEdit_grid_size_kent.text())
+            if is_geographic:
+                grid_size = grid_size / 110000
+
         tmpdir = tempfile.mkdtemp()
         try:
             file = engine.spherical_kent(gdf, min_x, max_x, min_y, max_y,
@@ -442,13 +550,23 @@ class GeoSubSampler:
         if not result:
             return
         gdf, engine, dip_col, dip_dir_col = result
-        grid_size = float(self.dockwidget.lineEdit_grid_size_kent_2.text())
         self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
-        if self.point_layer.crs().isGeographic():
-            grid_size = grid_size / 110000
+        is_geographic = self.point_layer.crs().isGeographic()
         bounds = gdf.total_bounds
         min_x, max_x = int(bounds[0]), int(bounds[2]) + 1
         min_y, max_y = int(bounds[1]), int(bounds[3]) + 1
+
+        if self.dockwidget.checkBox_target_n.isChecked():
+            target_n = self.dockwidget.spinBox_target_n.value()
+            grid_size, _ = self._find_grid_size_for_target(
+                engine.outlier_removal, gdf, min_x, max_x, min_y, max_y, target_n)
+            display_size = grid_size * 110000 if is_geographic else grid_size
+            self.dockwidget.lineEdit_grid_size_kent_2.setText(f"{display_size:.0f}")
+        else:
+            grid_size = float(self.dockwidget.lineEdit_grid_size_kent_2.text())
+            if is_geographic:
+                grid_size = grid_size / 110000
+
         tmpdir = tempfile.mkdtemp()
         try:
             file = engine.outlier_removal(gdf, min_x, max_x, min_y, max_y,
@@ -481,6 +599,81 @@ class GeoSubSampler:
             self.fault_strat_offset()
         elif self.dockwidget.radioButton_fault_clusters.isChecked():
             self.fault_ClusterOrientations()
+
+    def _tp_prepare_fault_attrs(self, gdf, method, fault_layer, polygon_layer,
+                                strat1, strat2, strat3, strat4):
+        """
+        Ensure gdf has the attribute column(s) required by the chosen TP fault
+        method.  Runs the relevant calculation automatically if the column is
+        absent.  Returns the (possibly enriched) GeoDataFrame unchanged when
+        no pre-computation is needed or when it fails.
+        """
+        if method == 'graph' and 'edge_type' not in gdf.columns:
+            tmpdir = tempfile.mkdtemp()
+            try:
+                tmp_in = os.path.join(tmpdir, 'tp_graph.shp')
+                gdf.to_file(tmp_in)
+                FaultsGraph().CalcFaultsGraph(tmp_in)
+                # save_graph_to_shapefile prepends prefix_ to the basename:
+                # tp_graph_edges.shp → simplified_full_tp_graph_edges.shp
+                tmp_edges = os.path.join(tmpdir, 'simplified_full_tp_graph_edges.shp')
+                if os.path.exists(tmp_edges):
+                    return gpd.read_file(tmp_edges).set_crs(gdf.crs, allow_override=True)
+            except Exception as exc:
+                print(f"T&P: graph pre-compute failed: {exc}")
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+
+        elif method == 'clusters' and not any('cluster' in c.lower() for c in gdf.columns):
+            tmpdir = tempfile.mkdtemp()
+            try:
+                tmp_in = os.path.join(tmpdir, 'tp_cl.shp')
+                tmp_az = os.path.join(tmpdir, 'tp_cl_az.shp')
+                gdf.to_file(tmp_in)
+                fo = FaultsOrientations()
+                fo.add_endpoint_azimuth(tmp_in, tmp_az, azimuth_field='endpt_az')
+                best_gdf, best_score = None, -1
+                for n in range(2, 8):
+                    try:
+                        res = fo.analyze_shapefile_trends(
+                            shapefile_path=tmp_az,
+                            trend_field='endpt_az',
+                            n_clusters=n,
+                        )
+                        sc = res.get('silhouette_score', -1)
+                        if sc > best_score:
+                            best_score, best_gdf = sc, res.get('gdf_with_clusters')
+                    except Exception:
+                        pass
+                if best_gdf is not None:
+                    return best_gdf.set_crs(gdf.crs, allow_override=True)
+            except Exception as exc:
+                print(f"T&P: cluster pre-compute failed: {exc}")
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+
+        elif method == 'strat_offset':
+            has_strat = any('strat' in c.lower() or 'offset' in c.lower()
+                            for c in gdf.columns)
+            strat_columns = [c for c in [strat1, strat2, strat3, strat4] if c]
+            if (not has_strat and strat_columns
+                    and polygon_layer and os.path.exists(polygon_layer.source())):
+                tmpdir = tempfile.mkdtemp()
+                try:
+                    tmp_in  = os.path.join(tmpdir, 'tp_so.shp')
+                    tmp_out = os.path.join(tmpdir, 'tp_so_out.shp')
+                    gdf.to_file(tmp_in)
+                    FaultStratOffset().CalcFaultStratOffset(
+                        tmp_in, polygon_layer.source(), tmp_out,
+                        strat_columns, offset_distance=50)
+                    if os.path.exists(tmp_out):
+                        return gpd.read_file(tmp_out).set_crs(gdf.crs, allow_override=True)
+                except Exception as exc:
+                    print(f"T&P: strat-offset pre-compute failed: {exc}")
+                finally:
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+
+        return gdf
 
     def topferPillewizer(self):
         """
@@ -554,6 +747,9 @@ class GeoSubSampler:
 
         if fault_layer and os.path.exists(fault_layer.source()):
             current_fault_gdf = gpd.read_file(fault_layer.source())
+            current_fault_gdf = self._tp_prepare_fault_attrs(
+                current_fault_gdf, fault_method, fault_layer, polygon_layer,
+                strat1, strat2, strat3, strat4)
 
         if polygon_layer and os.path.exists(polygon_layer.source()):
             current_polygon_gdf = gpd.read_file(polygon_layer.source())
@@ -575,29 +771,35 @@ class GeoSubSampler:
         except ValueError:
             grid_sz = 5000.0
 
-        # ---- Iterate over ratios ----------------------------------------
-        # Each step uses output of the previous step as its input.
-        # The relative ratio at step i is iter_ratio / prev_ratio so that
-        # cumulative reduction matches the absolute target ratio.
+        # Points are always subsampled from the original full dataset using the
+        # absolute cumulative ratio, so results at each scale are independent.
+        # Lines and polygons chain incrementally (each step feeds the next).
+        original_pt_gdf = current_pt_gdf  # never mutated
+
+        # --- Lines: ratio=1 baseline — full dataset with tp_sel_val appended ---
+        if current_fault_gdf is not None:
+            ln_full = scale_lines_tp(current_fault_gdf, 1.0, fault_method)
+            layer_path = os.path.dirname(fault_layer.source())
+            out_name = f"{fault_layer.name()}_tp_1.shp"
+            out_path = os.path.join(layer_path, out_name)
+            if os.path.exists(out_path):
+                out_path = out_path.replace(
+                    '.shp', f"_{random.randint(10000,99999)}.shp")
+            ln_full.to_file(out_path, driver='ESRI Shapefile')
+            ln_layer = QgsVectorLayer(out_path, f"{fault_layer.name()}_tp_1", "ogr")
+            self._add_layer_with_style(ln_layer, fault_layer)
+
         prev_ratio = 1.0
         for iter_ratio in iterations:
-            step_ratio = iter_ratio / prev_ratio
+            step_ratio = iter_ratio / prev_ratio   # still needed for lines/polygons
             prev_ratio = iter_ratio
             ratio_tag  = f"{iter_ratio:.6f}".rstrip('0').rstrip('.')
 
-            # --- Points ---
-            if current_pt_gdf is not None:
+            # --- Points (always from original, absolute ratio) ---
+            if original_pt_gdf is not None:
                 pt_scaled = scale_points_tp(
-                    current_pt_gdf, step_ratio, pt_engine, point_method,
+                    original_pt_gdf, iter_ratio, pt_engine, point_method,
                     pt_dip_col, pt_dip_dir_col, grid_sz)
-
-                # Update chained GDF: re-derive coordinate columns from geometry
-                current_pt_gdf = pt_scaled.copy()
-                current_pt_gdf['EASTING']  = current_pt_gdf.geometry.x
-                current_pt_gdf['NORTHING'] = current_pt_gdf.geometry.y
-                if not self.dockwidget.checkBox_dip_dir.isChecked():
-                    current_pt_gdf['_eff_dipdir'] = (
-                        current_pt_gdf[pt_dip_dir_col].astype(float) - 90) % 360
 
                 # Drop internal helper columns for the saved file
                 drop = [c for c in ['EASTING', 'NORTHING', '_eff_dipdir']
@@ -622,8 +824,7 @@ class GeoSubSampler:
                 ln_layer = QgsVectorLayer(
                     out_path,
                     f"{fault_layer.name()}_tp_{ratio_tag}", "ogr")
-                if ln_layer.isValid():
-                    QgsProject.instance().addMapLayer(ln_layer)
+                self._add_layer_with_style(ln_layer, fault_layer)
 
             # --- Polygons ---
             if current_polygon_gdf is not None:
@@ -657,8 +858,7 @@ class GeoSubSampler:
                 poly_layer = QgsVectorLayer(
                     out_path,
                     f"{polygon_layer.name()}_tp_{ratio_tag}", "ogr")
-                if poly_layer.isValid():
-                    QgsProject.instance().addMapLayer(poly_layer)
+                self._add_layer_with_style(poly_layer, polygon_layer)
 
     def firstOrder(self):
         self.polygon_layer = (
@@ -799,16 +999,8 @@ class GeoSubSampler:
                         "ogr",
                     )
 
-                    # Check if layer is valid
-                    if upscaled_layer.isValid():
-                        QgsProject.instance().addMapLayer(upscaled_layer)
-                    else:
-                        print(
-                            "Failed to load layer",
-                            self.polygon_layer.name() + "_min_area",
-                        )
-
-                    QgsProject.instance().addMapLayer(upscaled_layer)
+                    self._add_layer_with_style(upscaled_layer, self.polygon_layer,
+                                               self.polygon_layer.name() + "_min_area")
             else:
                 self.iface.messageBar().pushMessage(
                     "Sorry, only layers saved to disk as a shapefile can be processed!",
@@ -855,11 +1047,8 @@ class GeoSubSampler:
                 "ogr",
             )
 
-            # Check if layer is valid
-            if upscaled_layer.isValid():
-                QgsProject.instance().addMapLayer(upscaled_layer)
-            else:
-                print("Failed to load layer", self.polyline_layer.name() + "_merge")
+            self._add_layer_with_style(upscaled_layer, self.polyline_layer,
+                                       self.polyline_layer.name() + "_merge")
 
         else:
             self.iface.messageBar().pushMessage(
@@ -886,11 +1075,8 @@ class GeoSubSampler:
                 new_path, self.polyline_layer.name() + "_graph", "ogr"
             )
 
-            # Check if layer is valid
-            if graph_layer.isValid():
-                QgsProject.instance().addMapLayer(graph_layer)
-            else:
-                print("Failed to load layer", self.polyline_layer + "_graph")
+            self._add_layer_with_style(graph_layer, self.polyline_layer,
+                                       self.polyline_layer.name() + "_graph")
 
     def fault_strat_offset(self):
         self.polyline_layer = (
@@ -940,11 +1126,8 @@ class GeoSubSampler:
                 new_path, self.polyline_layer.name() + "_stratOffset", "ogr"
             )
 
-            # Check if layer is valid
-            if graph_layer.isValid():
-                QgsProject.instance().addMapLayer(graph_layer)
-            else:
-                print("Failed to load layer", self.polyline_layer + "_stratOffset")
+            self._add_layer_with_style(graph_layer, self.polyline_layer,
+                                       self.polyline_layer.name() + "_stratOffset")
 
     def fault_Lengths(self):
         self.polyline_layer = (
@@ -975,11 +1158,8 @@ class GeoSubSampler:
                 "ogr",
             )
 
-            # Check if layer is valid
-            if upscaled_layer.isValid():
-                QgsProject.instance().addMapLayer(upscaled_layer)
-            else:
-                print("Failed to load layer", self.polyline_layer.name() + "_Length")
+            self._add_layer_with_style(upscaled_layer, self.polyline_layer,
+                                       self.polyline_layer.name() + "_Length")
 
         else:
             self.iface.messageBar().pushMessage(
@@ -1023,14 +1203,8 @@ class GeoSubSampler:
                 "ogr",
             )
 
-            # Check if layer is valid
-            if upscaled_layer.isValid():
-                QgsProject.instance().addMapLayer(upscaled_layer)
-            else:
-                print(
-                    "Failed to load layer",
-                    self.polyline_layer.name() + f"_fault_clusters_{best_n}",
-                )
+            self._add_layer_with_style(upscaled_layer, self.polyline_layer,
+                                       self.polyline_layer.name() + f"_fault_clusters_{best_n}")
 
     def updatePointsFields(self):
         """Update the fields in the points layer combo box when a new layer is selected."""
@@ -1065,29 +1239,10 @@ class GeoSubSampler:
                 "ogr",
             )
 
-        # Check if layer is valid
-        if upscaled_layer.isValid():
-            QgsProject.instance().addMapLayer(upscaled_layer)
-        else:
-            print(
-                "Failed to load layer",
-                poly_name,
-            )
-        
-        upscaled_fault = QgsVectorLayer(
-                fault_path,
-                fault_name,
-                "ogr",
-            )
+        self._add_layer_with_style(upscaled_layer, polygon_layer, poly_name)
 
-        # Check if layer is valid
-        if upscaled_fault.isValid():
-            QgsProject.instance().addMapLayer(upscaled_fault)
-        else:
-            print(
-                "Failed to load layer",
-                fault_name,
-            )
+        upscaled_fault = QgsVectorLayer(fault_path, fault_name, "ogr")
+        self._add_layer_with_style(upscaled_fault, fault_layer, fault_name)
 
     def updateMapsFields(self):
         """Update the fields in the maps layer combo box when a new layer is selected."""

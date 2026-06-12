@@ -6,6 +6,7 @@ GeoSubSamplerDockWidget — pure-Python UI (no .ui file required).
 from qgis.PyQt import QtGui, QtWidgets
 from qgis.PyQt.QtCore import pyqtSignal, Qt
 from qgis.gui import QgsMapLayerComboBox, QgsFieldComboBox, QgsDoubleSpinBox
+from qgis.core import QgsFieldProxyModel
 
 try:
     _SB_ALWAYS = Qt.ScrollBarPolicy.ScrollBarAlwaysOn
@@ -96,6 +97,8 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         # Dip / Dip Dir / convention row
         self.mFieldComboBox_dip     = QgsFieldComboBox()
         self.mFieldComboBox_dip_dir = QgsFieldComboBox()
+        self.mFieldComboBox_dip.setFilters(QgsFieldProxyModel.Numeric)
+        self.mFieldComboBox_dip_dir.setFilters(QgsFieldProxyModel.Numeric)
         self.checkBox_dip_dir = QtWidgets.QCheckBox("Dip Direction")
         self.checkBox_dip_dir.setChecked(True)
 
@@ -169,6 +172,22 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         vbox.addLayout(row_ko)
         self._subsample_group.addButton(self.radioButton_kent_outlier)
 
+        # Target N — shared by all three grid cell methods
+        self.checkBox_target_n = QtWidgets.QCheckBox("Auto-fit to N pts")
+        self.spinBox_target_n = QtWidgets.QSpinBox()
+        self.spinBox_target_n.setRange(1, 100000)
+        self.spinBox_target_n.setValue(100)
+        self.spinBox_target_n.setFixedWidth(75)
+        self.spinBox_target_n.setEnabled(False)
+        self.checkBox_target_n.toggled.connect(self.spinBox_target_n.setEnabled)
+        row_target = QtWidgets.QHBoxLayout()
+        row_target.addSpacing(20)
+        row_target.addWidget(self.checkBox_target_n)
+        row_target.addWidget(self.spinBox_target_n)
+        row_target.addWidget(self._lbl("points (±15%)", Qt.AlignLeft | Qt.AlignVCenter))
+        row_target.addStretch()
+        vbox.addLayout(row_target)
+
         vbox.addWidget(self._hline())
 
         # 1o Sampling — separate standalone button
@@ -222,20 +241,20 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         # Radio group — fault attribute methods
         self._fault_group = QtWidgets.QButtonGroup(self)
 
-        self.radioButton_fault_length = QtWidgets.QRadioButton("Length")
+        self.radioButton_fault_length = QtWidgets.QRadioButton("Length Only")
         self.radioButton_fault_length.setChecked(True)
         self._fault_group.addButton(self.radioButton_fault_length)
         vbox.addWidget(self.radioButton_fault_length)
 
-        self.radioButton_fault_graph = QtWidgets.QRadioButton("Graph")
+        self.radioButton_fault_graph = QtWidgets.QRadioButton("Graph then Length")
         self._fault_group.addButton(self.radioButton_fault_graph)
         vbox.addWidget(self.radioButton_fault_graph)
 
-        self.radioButton_fault_strat_offset = QtWidgets.QRadioButton("Strat Offset")
+        self.radioButton_fault_strat_offset = QtWidgets.QRadioButton("Strat Offset  then Length")
         self._fault_group.addButton(self.radioButton_fault_strat_offset)
         vbox.addWidget(self.radioButton_fault_strat_offset)
 
-        self.radioButton_fault_clusters = QtWidgets.QRadioButton("Orientation Clusters")
+        self.radioButton_fault_clusters = QtWidgets.QRadioButton("Orientation Clusters then Length")
         self._fault_group.addButton(self.radioButton_fault_clusters)
         self.pushButton_process_faults = QtWidgets.QPushButton("Process Faults")
         row_fc = QtWidgets.QHBoxLayout()
@@ -284,7 +303,7 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         self.plainTextEdit_dyke_Codes = QtWidgets.QPlainTextEdit()
         self.plainTextEdit_dyke_Codes.setMaximumHeight(55)
         row_dyke = QtWidgets.QHBoxLayout()
-        row_dyke.addWidget(self._lbl("Dyke Codes\n(comma sep)"))
+        row_dyke.addWidget(self._lbl("Ignore Codes\n(comma sep)"))
         row_dyke.addWidget(self.plainTextEdit_dyke_Codes)
         vbox.addLayout(row_dyke)
 
