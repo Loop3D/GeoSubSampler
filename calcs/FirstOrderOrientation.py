@@ -412,7 +412,7 @@ class SubsamplingEngine:
                               else str(int(dip_val)))
                 dipdir_str = ('NaN' if math.isnan(dipdir_val)
                               else str(int(dipdir_val)))
-                out.write(f"{int(centx)},{int(centy)},"
+                out.write(f"{centx:.8f},{centy:.8f},"
                           f"{dip_str},{dipdir_str}\n")
         return file
 
@@ -475,7 +475,7 @@ class SubsamplingEngine:
                     '-999' if (isinstance(dipdir2, float) and math.isnan(dipdir2))
                     else str(int(dipdir2))
                 )
-                out.write(f"{int(centx)},{int(centy)},"
+                out.write(f"{centx:.8f},{centy:.8f},"
                           f"{dip2_str},{dipdir2_str},"
                           f"{int(cnt)},{kappa},{beta}\n")
         return file
@@ -524,8 +524,8 @@ class SubsamplingEngine:
                       "count,kappa,beta,REMOVED_INDEX\n")
 
             for (cx, cy), grid in df.groupby(['_cx', '_cy']):
-                centx = int(minx + (cx + 0.5) * n)
-                centy = int(miny + (cy + 0.5) * n)
+                centx = minx + (cx + 0.5) * n
+                centy = miny + (cy + 0.5) * n
 
                 if len(grid) <= 3:
                     continue  # skip cells too small for outlier removal
@@ -542,7 +542,7 @@ class SubsamplingEngine:
                 final_grid = grid.drop(index=removed_idx)
                 dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
                 cnt, kappa, beta = self._calc_kent(final_grid)
-                out.write(f"{centx},{centy},{int(dip_f)},{int(dipdir_f)},"
+                out.write(f"{centx:.8f},{centy:.8f},{int(dip_f)},{int(dipdir_f)},"
                           f"{cnt},{kappa},{beta},{removed_idx}\n")
 
         return file
@@ -600,12 +600,12 @@ class SubsamplingEngine:
                         (df[self.easting]  >= linex) &
                         (df[self.easting]  <= linex + n)
                     ]
-                    centx = int(linex + n / 2)
-                    centy = int(liney + n / 2)
+                    centx = linex + n / 2
+                    centy = liney + n / 2
                     N = len(grid)
 
                     if N <= 3:
-                        out.write(f"{centx},{centy},-999,-999,"
+                        out.write(f"{centx:.8f},{centy:.8f},-999,-999,"
                                   f"{N},-999,-999,-1\n")
                         continue
 
@@ -615,7 +615,7 @@ class SubsamplingEngine:
                     n_s = float(grid['dc_n'].sum())
                     g_len = sqrt(l_s**2 + m_s**2 + n_s**2)
                     if g_len < 1e-12:
-                        out.write(f"{centx},{centy},-999,-999,"
+                        out.write(f"{centx:.8f},{centy:.8f},-999,-999,"
                                   f"{N},-999,-999,-1\n")
                         continue
                     mean_vec = np.array([l_s / g_len, m_s / g_len,
@@ -658,11 +658,11 @@ class SubsamplingEngine:
 
                     dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
                     if math.isnan(dip_f) or math.isnan(dipdir_f):
-                        out.write(f"{centx},{centy},-999,-999,"
+                        out.write(f"{centx:.8f},{centy:.8f},-999,-999,"
                                   f"{N - n_removed},-999,-999,{n_removed}\n")
                         continue
                     count, kappa_f, beta_f = self._calc_kent(final_grid)
-                    out.write(f"{centx},{centy},{int(dip_f)},{int(dipdir_f)},"
+                    out.write(f"{centx:.8f},{centy:.8f},{int(dip_f)},{int(dipdir_f)},"
                               f"{count},{kappa_f},{beta_f},{n_removed}\n")
 
         # Strip sentinel rows

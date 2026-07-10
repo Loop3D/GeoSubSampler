@@ -70,6 +70,7 @@ from .calcs.PolygonSimplification import SimplificationEngine, vector_simplify_f
 import geopandas as gpd
 import os
 import random
+import re
 import time
 import math
 import pandas as pd
@@ -261,6 +262,110 @@ class GeoSubSampler:
             print(f"No layers found with name '{layerName}'")
             return 0
 
+    @staticmethod
+    def _shapefile_safe_columns(columns):
+        """
+        Map each column name to a shapefile/DBF-safe (<=10 char) name,
+        de-duplicating collisions with a numeric suffix. Applied ourselves
+        before writing, so the result is exactly known (rather than relying
+        on whatever the OGR shapefile driver would silently truncate names to).
+        """
+        seen = {}
+        mapping = {}
+        for col in columns:
+            if col == 'geometry':
+                mapping[col] = col
+                continue
+            candidate = str(col)[:10]
+            n = 1
+            while candidate in seen and seen[candidate] != col:
+                suffix = f"_{n}"
+                candidate = str(col)[:10 - len(suffix)] + suffix
+                n += 1
+            seen[candidate] = col
+            mapping[col] = candidate
+        return mapping
+
+    def _resolved_source(self, layer):
+        """
+        Return a .shp path for `layer`, usable with os.path.exists()/gpd.read_file().
+
+        Every tool in this plugin assumes a shapefile-backed source. A
+        GeoPackage layer's source string (e.g. "C:/foo.gpkg|layername=bar")
+        fails os.path.exists() outright, so such layers were silently
+        treated as missing and skipped. If the source isn't already a .shp,
+        export the layer's current features to a sibling .shp next to the
+        geopackage (never written back into it) and reuse that file on
+        repeat runs. Field names longer than the 10-char shapefile/DBF limit
+        are pre-truncated ourselves (see _shapefile_safe_columns) and the
+        original->truncated mapping is cached for _resolved_field() to use.
+        """
+        source = layer.source()
+        path_part = source.split('|')[0]
+
+        if path_part.lower().endswith('.shp'):
+            return path_part
+
+        if not os.path.exists(path_part):
+            return source
+
+        out_dir = os.path.dirname(path_part)
+        base = os.path.splitext(os.path.basename(path_part))[0]
+        safe_name = re.sub(r'[^A-Za-z0-9_]+', '_', layer.name()).strip('_')
+        out_path = os.path.join(out_dir, f"{base}_{safe_name}.shp")
+
+        if not hasattr(self, '_field_name_maps'):
+            self._field_name_maps = {}
+
+        if not os.path.exists(out_path) or out_path not in self._field_name_maps:
+            match = re.search(r'layername=([^|]+)', source)
+            layername = match.group(1) if match else None
+            try:
+                gdf = (gpd.read_file(path_part, layer=layername) if layername
+                       else gpd.read_file(path_part))
+                field_map = self._shapefile_safe_columns(gdf.columns)
+                self._field_name_maps[out_path] = field_map
+                if not os.path.exists(out_path):
+                    if any(k != v for k, v in field_map.items()):
+                        gdf = gdf.rename(columns=field_map)
+                    gdf.to_file(out_path, driver='ESRI Shapefile')
+            except Exception as exc:
+                print(f"Could not export layer '{layer.name()}' to shapefile: {exc}")
+                return source
+
+        return out_path
+
+    def _resolved_field(self, layer, field_name):
+        """
+        Translate a field combo-box selection into the column name actually
+        present in `layer`'s resolved/materialized data. Handles two
+        independent name changes:
+
+          1. QgsFieldComboBox displays a field's alias if one is set on the
+             layer, not its real name — resolved via QgsFields.lookupField(),
+             which is alias-aware (common on curated/compiled datasets where
+             friendly aliases are configured over cryptic real column names).
+          2. _resolved_source's shapefile export truncates real names longer
+             than 10 characters — resolved via its cached field-name map.
+        """
+        if not field_name:
+            return field_name
+
+        real_name = field_name
+        try:
+            fields = layer.fields()
+            idx = fields.lookupField(field_name)
+            if idx >= 0:
+                real_name = fields.at(idx).name()
+        except Exception:
+            pass
+
+        out_path = self._resolved_source(layer)
+        field_map = getattr(self, '_field_name_maps', {}).get(out_path)
+        if field_map and real_name in field_map:
+            return field_map[real_name]
+        return real_name
+
     def setUpPointSampler(self, checkFields=True):
         layerName = self.dockwidget.mMapLayerComboBox_points.currentText()
         dip_col = self.dockwidget.mFieldComboBox_dip.currentText()
@@ -269,9 +374,9 @@ class GeoSubSampler:
         if layerName == "":
             return False
 
-        if os.path.exists(self.points_layer.source()):
+        if os.path.exists(self._resolved_source(self.points_layer)):
 
-            gdf = gpd.read_file(self.points_layer.source())
+            gdf = gpd.read_file(self._resolved_source(self.points_layer))
 
             if (dip_col == "" or dip_dir_col == "") and checkFields:
                 self.iface.messageBar().pushMessage(
@@ -283,11 +388,39 @@ class GeoSubSampler:
             elif dip_col == "" or dip_dir_col == "":
                 dip_col = gdf.columns[1]
                 dip_dir_col = gdf.columns[2]
+            else:
+                # Field combo boxes may show a field's alias rather than its
+                # real name, and/or the real name may have been shortened by
+                # _resolved_source's shapefile export (10-char DBF limit) —
+                # _resolved_field() untangles both.
+                dip_col = self._resolved_field(self.points_layer, dip_col)
+                dip_dir_col = self._resolved_field(self.points_layer, dip_dir_col)
+
+            missing = [c for c in (dip_col, dip_dir_col) if c not in gdf.columns]
+            if missing:
+                self.iface.messageBar().pushMessage(
+                    f"T&P: field(s) {missing} not found in the loaded data. "
+                    f"Available columns: {list(gdf.columns)}",
+                    level=Qgis.Critical, duration=20)
+                return False
 
             # Add coordinate columns from geometry (engine needs these for grid operations)
             gdf = gdf.copy()
             gdf['EASTING'] = gdf.geometry.x
             gdf['NORTHING'] = gdf.geometry.y
+
+            # Drop features with nulls in dip/dip-dir before they reach the engine.
+            # Unfiltered nulls become NaN vector components; pandas' skipna sum then
+            # silently excludes them from their grid cell's mean/Kent calculation,
+            # which can make whole cells vanish from the subsampled output.
+            n_before = len(gdf)
+            gdf = gdf.dropna(subset=[dip_col, dip_dir_col, 'EASTING', 'NORTHING']).copy()
+            n_dropped = n_before - len(gdf)
+            if n_dropped:
+                self.iface.messageBar().pushMessage(
+                    f"{n_dropped} point(s) with null dip/dip-dir/coordinates "
+                    f"dropped before subsampling.",
+                    level=Qgis.Warning, duration=10)
 
             # If input is strike, convert to dip direction (dip_dir = strike - 90)
             if not self.dockwidget.checkBox_dip_dir.isChecked():
@@ -324,7 +457,7 @@ class GeoSubSampler:
         QgsProject.instance().addMapLayer(new_layer)
 
     def finalisePointSampler(self, gdf2, qgis_layer, name, param=0):
-        layer_path = os.path.dirname(qgis_layer.source())
+        layer_path = os.path.dirname(self._resolved_source(qgis_layer))
         if(param==0):
             param2 = ''
 
@@ -494,6 +627,7 @@ class GeoSubSampler:
             self.dockwidget.lineEdit_grid_size.setText(f"{display_size:.0f}")
         else:
             grid_size = float(self.dockwidget.lineEdit_grid_size.text())
+            display_size = grid_size
             if is_geographic:
                 grid_size = grid_size / 110000
 
@@ -508,7 +642,7 @@ class GeoSubSampler:
             gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
             gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
                 columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
-            self.finalisePointSampler(gdf2, self.points_layer, "gridCellAveraging", grid_size)
+            self.finalisePointSampler(gdf2, self.points_layer, "gridCellAveraging", display_size)
 
     def kent(self):
         result = self.setUpPointSampler()
@@ -529,6 +663,7 @@ class GeoSubSampler:
             self.dockwidget.lineEdit_grid_size_kent.setText(f"{display_size:.0f}")
         else:
             grid_size = float(self.dockwidget.lineEdit_grid_size_kent.text())
+            display_size = grid_size
             if is_geographic:
                 grid_size = grid_size / 110000
 
@@ -543,7 +678,7 @@ class GeoSubSampler:
             gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
             gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
                 columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
-            self.finalisePointSampler(gdf2, self.points_layer, "grid_cell_kent", grid_size)
+            self.finalisePointSampler(gdf2, self.points_layer, "grid_cell_kent", display_size)
 
     def kentOutlier(self):
         result = self.setUpPointSampler()
@@ -564,6 +699,7 @@ class GeoSubSampler:
             self.dockwidget.lineEdit_grid_size_kent_2.setText(f"{display_size:.0f}")
         else:
             grid_size = float(self.dockwidget.lineEdit_grid_size_kent_2.text())
+            display_size = grid_size
             if is_geographic:
                 grid_size = grid_size / 110000
 
@@ -578,12 +714,46 @@ class GeoSubSampler:
             gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
             gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
                 columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
-            self.finalisePointSampler(gdf2, self.points_layer, "grid_cell_kentOutlier", grid_size)
+            self.finalisePointSampler(gdf2, self.points_layer, "grid_cell_kentOutlier", display_size)
+
+    def _validate_dip_fields(self, require_points_layer):
+        """
+        Fail fast with a clear message if dip/dip-direction fields aren't
+        set, before any processing (GeoPackage materialization, baseline
+        output writes, etc.) has run.
+
+        require_points_layer=True: a points layer must also be selected
+        (used by the standalone point-subsampling tools, where points are
+        the whole point of the operation).
+        require_points_layer=False: a points layer is optional (used by
+        T&P, which can run on just faults/polygons) — dip/dip-direction are
+        only required if a points layer has actually been chosen.
+        """
+        layer_name = self.dockwidget.mMapLayerComboBox_points.currentText()
+        if not layer_name:
+            if require_points_layer:
+                self.iface.messageBar().pushMessage(
+                    "Please select a points layer before continuing!",
+                    level=Qgis.Warning, duration=15)
+                return False
+            return True
+
+        dip_col = self.dockwidget.mFieldComboBox_dip.currentText()
+        dip_dir_col = self.dockwidget.mFieldComboBox_dip_dir.currentText()
+        if not dip_col or not dip_dir_col:
+            self.iface.messageBar().pushMessage(
+                "Please define dip & dip dir/strike fields before continuing!",
+                level=Qgis.Warning, duration=15)
+            return False
+        return True
 
     def subsamplePoints(self):
         if self.dockwidget.radioButton_stochastic.isChecked():
             self.stochastic()
-        elif self.dockwidget.radioButton_gsa.isChecked():
+            return
+        if not self._validate_dip_fields(require_points_layer=True):
+            return
+        if self.dockwidget.radioButton_gsa.isChecked():
             self.gridCellAveraging()
         elif self.dockwidget.radioButton_kent.isChecked():
             self.kent()
@@ -657,14 +827,14 @@ class GeoSubSampler:
                             for c in gdf.columns)
             strat_columns = [c for c in [strat1, strat2, strat3, strat4] if c]
             if (not has_strat and strat_columns
-                    and polygon_layer and os.path.exists(polygon_layer.source())):
+                    and polygon_layer and os.path.exists(self._resolved_source(polygon_layer))):
                 tmpdir = tempfile.mkdtemp()
                 try:
                     tmp_in  = os.path.join(tmpdir, 'tp_so.shp')
                     tmp_out = os.path.join(tmpdir, 'tp_so_out.shp')
                     gdf.to_file(tmp_in)
                     FaultStratOffset().CalcFaultStratOffset(
-                        tmp_in, polygon_layer.source(), tmp_out,
+                        tmp_in, self._resolved_source(polygon_layer), tmp_out,
                         strat_columns, offset_distance=50)
                     if os.path.exists(tmp_out):
                         return gpd.read_file(tmp_out).set_crs(gdf.crs, allow_override=True)
@@ -685,6 +855,9 @@ class GeoSubSampler:
         If increment < ratio the method iterates through intermediate ratios
         with step sizes growing by 1.5× each time.
         """
+        if not self._validate_dip_fields(require_points_layer=False):
+            return
+
         try:
             ratio     = float(self.dockwidget.lineEdit_tp_ratio.text())
             increment = float(self.dockwidget.lineEdit_tp_increment.text())
@@ -741,18 +914,29 @@ class GeoSubSampler:
         fault_layer   = self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         polygon_layer = self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
 
+        # Field combo boxes reflect the original layer's field names, which may
+        # have been shortened by _resolved_source's shapefile export (DBF field
+        # names are capped at 10 characters).
+        if polygon_layer:
+            strat1     = self._resolved_field(polygon_layer, strat1)
+            strat2     = self._resolved_field(polygon_layer, strat2)
+            strat3     = self._resolved_field(polygon_layer, strat3)
+            strat4     = self._resolved_field(polygon_layer, strat4)
+            lithoname  = self._resolved_field(polygon_layer, lithoname)
+            dyke_field = self._resolved_field(polygon_layer, dyke_field)
+
         # Pre-load GeoDataFrames once; each iteration feeds into the next
         current_fault_gdf   = None
         current_polygon_gdf = None
 
-        if fault_layer and os.path.exists(fault_layer.source()):
-            current_fault_gdf = gpd.read_file(fault_layer.source())
+        if fault_layer and os.path.exists(self._resolved_source(fault_layer)):
+            current_fault_gdf = gpd.read_file(self._resolved_source(fault_layer))
             current_fault_gdf = self._tp_prepare_fault_attrs(
                 current_fault_gdf, fault_method, fault_layer, polygon_layer,
                 strat1, strat2, strat3, strat4)
 
-        if polygon_layer and os.path.exists(polygon_layer.source()):
-            current_polygon_gdf = gpd.read_file(polygon_layer.source())
+        if polygon_layer and os.path.exists(self._resolved_source(polygon_layer)):
+            current_polygon_gdf = gpd.read_file(self._resolved_source(polygon_layer))
             crs = polygon_layer.crs()
             if crs.isGeographic():
                 dist_thresh = dist_thresh / 110000
@@ -782,7 +966,7 @@ class GeoSubSampler:
 
         if current_fault_gdf is not None:
             ln_full = scale_lines_tp(current_fault_gdf, 1.0, fault_method)
-            layer_path = os.path.dirname(fault_layer.source())
+            layer_path = os.path.dirname(self._resolved_source(fault_layer))
             out_name = f"{fault_layer.name()}_tp_1.shp"
             out_path = os.path.join(layer_path, out_name)
             if os.path.exists(out_path):
@@ -793,7 +977,7 @@ class GeoSubSampler:
             self._add_layer_with_style(ln_layer, fault_layer)
 
         if current_polygon_gdf is not None:
-            layer_path = os.path.dirname(polygon_layer.source())
+            layer_path = os.path.dirname(self._resolved_source(polygon_layer))
             out_name = f"{polygon_layer.name()}_tp_1.shp"
             out_path = os.path.join(layer_path, out_name)
             if os.path.exists(out_path):
@@ -839,7 +1023,7 @@ class GeoSubSampler:
                         strat1, strat2, strat3, strat4)
                 ln_scaled = scale_lines_tp(current_fault_gdf, step_ratio, fault_method)
                 current_fault_gdf = ln_scaled
-                layer_path = os.path.dirname(fault_layer.source())
+                layer_path = os.path.dirname(self._resolved_source(fault_layer))
                 out_name   = f"{fault_layer.name()}_tp_{ratio_tag}.shp"
                 out_path   = os.path.join(layer_path, out_name)
                 if os.path.exists(out_path):
@@ -873,7 +1057,7 @@ class GeoSubSampler:
                     print(f"T&P polygon scaling error at ratio {iter_ratio}: {exc}")
                     poly_scaled = current_polygon_gdf.copy()
 
-                layer_path = os.path.dirname(polygon_layer.source())
+                layer_path = os.path.dirname(self._resolved_source(polygon_layer))
                 out_name   = f"{polygon_layer.name()}_tp_{ratio_tag}.shp"
                 out_path   = os.path.join(layer_path, out_name)
                 if os.path.exists(out_path):
@@ -891,22 +1075,24 @@ class GeoSubSampler:
         )
         self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
         if self.polygon_layer is not None and self.point_layer is not None:
-            if os.path.exists(self.polygon_layer.source()) and os.path.exists(self.point_layer.source()):
+            if os.path.exists(self._resolved_source(self.polygon_layer)) and os.path.exists(self._resolved_source(self.point_layer)):
                 distance_threshold = float(
                     self.dockwidget.lineEdit_1o_distance.text()
                 )
                 angle_threshold = float(self.dockwidget.lineEdit_1o_angle.text())
 
                 # Convert QGIS layer to GeoPandas
-                geology         = gpd.read_file(self.polygon_layer.source())
+                geology         = gpd.read_file(self._resolved_source(self.polygon_layer))
                 contact_gdf     = geology[['geometry']].copy()
                 contact_gdf['geometry'] = geology.boundary
-                orientation_gdf = gpd.read_file(self.point_layer.source())
+                orientation_gdf = gpd.read_file(self._resolved_source(self.point_layer))
                 dip_col = self.dockwidget.mFieldComboBox_dip.currentText()
                 dip_dir_col = self.dockwidget.mFieldComboBox_dip_dir.currentText()
                 if not dip_col or not dip_dir_col:
                     print("First Order: please select DIP and DIP_DIR fields before running.")
                     return
+                dip_col = self._resolved_field(self.point_layer, dip_col)
+                dip_dir_col = self._resolved_field(self.point_layer, dip_dir_col)
 
                 # Create an instance of SubsamplingEngine
                 subsampler = SubsamplingEngine(dip=dip_col, dipdir=dip_dir_col)
@@ -927,7 +1113,7 @@ class GeoSubSampler:
             self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
         )
         if self.polygon_layer is not None:
-            if os.path.exists(self.polygon_layer.source()):
+            if os.path.exists(self._resolved_source(self.polygon_layer)):
                 distance_threshold = float(
                     self.dockwidget.lineEdit_node_tolerance.text()
                 )
@@ -943,6 +1129,12 @@ class GeoSubSampler:
                 )
                 dyke_field = self.dockwidget.mFieldComboBox_dyke.currentText()
                 dyke_index = self.dockwidget.mFieldComboBox_dyke.currentIndex()
+                lithoname  = self._resolved_field(self.polygon_layer, lithoname)
+                strat1     = self._resolved_field(self.polygon_layer, strat1)
+                strat2     = self._resolved_field(self.polygon_layer, strat2)
+                strat3     = self._resolved_field(self.polygon_layer, strat3)
+                strat4     = self._resolved_field(self.polygon_layer, strat4)
+                dyke_field = self._resolved_field(self.polygon_layer, dyke_field)
                 incScale = self.dockwidget.mQgsDoubleSpinBox_upinc.value()
 
                 maxScale = float(self.dockwidget.lineEdit_polygon_area.text())
@@ -961,7 +1153,7 @@ class GeoSubSampler:
                         min_area_threshold = min_area_threshold / (110000 * 110000)
                         distance_threshold = distance_threshold / 110000
 
-                    layer_path = os.path.dirname(self.polygon_layer.source())
+                    layer_path = os.path.dirname(self._resolved_source(self.polygon_layer))
                     new_path = (
                         layer_path
                         + "/"
@@ -985,7 +1177,7 @@ class GeoSubSampler:
 
                     # Convert QGIS layer to GeoPandas if first in series
                     if upScale == minScale:
-                        gdf = gpd.read_file(self.polygon_layer.source())
+                        gdf = gpd.read_file(self._resolved_source(self.polygon_layer))
 
                     # Handle dykes special case
                     if dyke_index != 0:
@@ -1037,7 +1229,7 @@ class GeoSubSampler:
         self.polyline_layer = (
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
-        if os.path.exists(self.polyline_layer.source()):
+        if os.path.exists(self._resolved_source(self.polyline_layer)):
             distance_tolerance = float(self.dockwidget.lineEdit_merge_tolerance.text())
             angle_tolerance = float(self.dockwidget.lineEdit_merge_search_angle.text())
             min_join_angle = float(self.dockwidget.lineEdit_merge_join_angle.text())
@@ -1048,7 +1240,7 @@ class GeoSubSampler:
                 min_join_angle=min_join_angle,  # Minimum 150° angle at join point (rejects angles < 150°)
             )
 
-            layer_path = os.path.dirname(self.polyline_layer.source())
+            layer_path = os.path.dirname(self._resolved_source(self.polyline_layer))
             new_path = layer_path + "/" + self.polyline_layer.name() + "_merged.shp"
             if os.path.exists(new_path):
                 random_5_digit_integer = random.randint(10000, 99999)
@@ -1061,7 +1253,7 @@ class GeoSubSampler:
                     + ".shp"
                 )
 
-            gdf = gpd.read_file(self.polyline_layer.source())
+            gdf = gpd.read_file(self._resolved_source(self.polyline_layer))
             output_gdf = merger.process_shapefile(gdf)
             output_gdf.to_file(new_path, driver="ESRI Shapefile")
 
@@ -1086,10 +1278,10 @@ class GeoSubSampler:
         self.polyline_layer = (
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
-        if os.path.exists(self.polyline_layer.source()):
+        if os.path.exists(self._resolved_source(self.polyline_layer)):
             graph_obj = FaultsGraph()
-            graph_obj.CalcFaultsGraph(self.polyline_layer.source())
-            directory, filename = os.path.split(self.polyline_layer.source())
+            graph_obj.CalcFaultsGraph(self._resolved_source(self.polyline_layer))
+            directory, filename = os.path.split(self._resolved_source(self.polyline_layer))
             new_path = (
                 directory
                 + "/simplified_full_"
@@ -1107,8 +1299,8 @@ class GeoSubSampler:
         self.polyline_layer = (
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
-        if os.path.exists(self.polyline_layer.source()) and os.path.exists(
-            self.map_layer.source()
+        if os.path.exists(self._resolved_source(self.polyline_layer)) and os.path.exists(
+            self._resolved_source(self.map_layer)
         ):
 
             strat_columns = []
@@ -1133,16 +1325,18 @@ class GeoSubSampler:
                 print("Fault Strat Offset: please select at least one priority field before running.")
                 return
 
+            strat_columns = [self._resolved_field(self.map_layer, c) for c in strat_columns]
+
             strat_offset_obj = FaultStratOffset()
             strat_offset_obj.CalcFaultStratOffset(
-                self.polyline_layer.source(),
-                self.map_layer.source(),
-                self.polyline_layer.source().replace(".shp", "_stratOffset.shp"),
+                self._resolved_source(self.polyline_layer),
+                self._resolved_source(self.map_layer),
+                self._resolved_source(self.polyline_layer).replace(".shp", "_stratOffset.shp"),
                 strat_columns,
                 offset_distance=50,
             )
 
-            directory, filename = os.path.split(self.polyline_layer.source())
+            directory, filename = os.path.split(self._resolved_source(self.polyline_layer))
             new_path = (
                 directory + "/" + str(filename).replace(".shp", "_stratOffset.shp")
             )
@@ -1158,7 +1352,7 @@ class GeoSubSampler:
         self.polyline_layer = (
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
-        if os.path.exists(self.polyline_layer.source()):
+        if os.path.exists(self._resolved_source(self.polyline_layer)):
 
             crs = self.polyline_layer.crs()
             if crs.isGeographic():
@@ -1166,10 +1360,10 @@ class GeoSubSampler:
             else:
                 crs_units = "meters"
 
-            outPath = self.polyline_layer.source().replace(".shp", "_length.shp")
+            outPath = self._resolved_source(self.polyline_layer).replace(".shp", "_length.shp")
             filter_obj = FaultLengths()
             gdf = filter_obj.add_polyline_length(
-                self.polyline_layer.source(),
+                self._resolved_source(self.polyline_layer),
                 output_path=outPath,
                 length_field="line_len",
                 unit=crs_units,
@@ -1202,11 +1396,11 @@ class GeoSubSampler:
         self.polyline_layer = (
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
-        if os.path.exists(self.polyline_layer.source()):
-            outPath = self.polyline_layer.source().replace(".shp", "_endpt_az.shp")
+        if os.path.exists(self._resolved_source(self.polyline_layer)):
+            outPath = self._resolved_source(self.polyline_layer).replace(".shp", "_endpt_az.shp")
             filter_obj = FaultsOrientations()
             gdf = filter_obj.add_endpoint_azimuth(
-                self.polyline_layer.source(), outPath, azimuth_field="endpt_az"
+                self._resolved_source(self.polyline_layer), outPath, azimuth_field="endpt_az"
             )
 
             best_n = filter_obj.example_manual_clusters(
@@ -1214,7 +1408,7 @@ class GeoSubSampler:
                 self.dockwidget.mMapLayerComboBox_fault_polylines.currentText(),
                 azimuth_field="endpt_az",
             )
-            layer_path = os.path.dirname(self.polyline_layer.source())
+            layer_path = os.path.dirname(self._resolved_source(self.polyline_layer))
             new_path = (
                 layer_path
                 + "/"
@@ -1245,11 +1439,11 @@ class GeoSubSampler:
         if polygon_layer is None or fault_layer is None:
             return
         area_tolerance = int(self.dockwidget.lineEdit_area_tolerance.text())
-        input_file = polygon_layer.source()
-        fault_file = fault_layer.source()
+        input_file = self._resolved_source(polygon_layer)
+        fault_file = self._resolved_source(fault_layer)
         output_file = input_file.replace(".shp", f"_MVW_{area_tolerance}.shp")
         poly_name=polygon_layer.name()+f"_MVW_{area_tolerance}"
-        fault_path=fault_layer.source().replace(".shp", f"_sn_si_{area_tolerance}.shp")
+        fault_path=self._resolved_source(fault_layer).replace(".shp", f"_sn_si_{area_tolerance}.shp")
         fault_name=fault_layer.name()+f"_sn_si_{area_tolerance}"
         result = vector_simplify_file_two_stage(
                         input_file=input_file,
