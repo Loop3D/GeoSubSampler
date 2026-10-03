@@ -388,12 +388,57 @@ class StructuralPolygonSubSampler:
             lambda geom: remove_small_holes(geom, min_area_threshold)
         )
         
+        # Step 1b: Filling a small hole leaves any island polygon that sat in it
+        # overlapping its host (the shared boundary ring is gone, so the island
+        # would have no merge candidate). Absorb such islands into the host now.
+        gdf_cleaned = gdf_cleaned.reset_index(drop=True)
+        sindex = gdf_cleaned.sindex
+        areas = gdf_cleaned.geometry.area
+        island_hosts = {}
+        for idx in gdf_cleaned.index:
+            geom = gdf_cleaned.geometry.iloc[idx]
+            if geom.is_empty or areas.iloc[idx] >= min_area_threshold:
+                continue
+            best_host, best_area = None, None
+            for cand in sindex.intersection(geom.bounds):
+                if cand == idx or cand in island_hosts:
+                    continue
+                cand_geom = gdf_cleaned.geometry.iloc[cand]
+                if areas.iloc[cand] <= areas.iloc[idx]:
+                    continue
+                overlap = geom.intersection(cand_geom).area
+                if overlap >= 0.99 * areas.iloc[idx] and (best_area is None or areas.iloc[cand] < best_area):
+                    best_host, best_area = cand, areas.iloc[cand]
+            if best_host is not None:
+                island_hosts[idx] = best_host
+
+        if island_hosts:
+            print(f"Absorbing {len(island_hosts)} island polygons covered by filled holes...")
+            for island_idx, host_idx in island_hosts.items():
+                # Host may itself be an absorbed island; follow the chain to a kept polygon
+                while host_idx in island_hosts:
+                    host_idx = island_hosts[host_idx]
+                values = []
+                field_num = 0
+                while True:
+                    field_name = 'inherit' if field_num == 0 else f'inherit{field_num}'
+                    if field_name not in gdf_cleaned.columns:
+                        break
+                    value = gdf_cleaned.iloc[island_idx][field_name]
+                    if pd.notna(value) and str(value).strip():
+                        values.append(str(value))
+                    field_num += 1
+                if values:
+                    max_inherit_field = append_to_inherit_fields(
+                        gdf_cleaned, host_idx, ' '.join(values), max_inherit_field)
+            gdf_cleaned = gdf_cleaned.drop(index=list(island_hosts)).reset_index(drop=True)
+
         # Step 2: Merge small polygons with neighbors using hierarchical preferences
         print("Merging small polygons with neighbors using lithology/stratigraphy preferences...")
-        
+
         # Reset index to ensure proper indexing
         gdf_cleaned = gdf_cleaned.reset_index(drop=True)
-        
+
         # Keep track of merge statistics
         merge_stats = {
             'same_lithology': 0,

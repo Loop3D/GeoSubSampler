@@ -295,7 +295,7 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         row_p2.addWidget(self.mFieldComboBox_priority_4)
         row_p2.addWidget(self._lbl("5"))
         row_p2.addWidget(self.mFieldComboBox_priority_5)
-        row_p2.addWidget(self._lbl("Dyke Field"))
+        row_p2.addWidget(self._lbl("Ignore Field"))
         row_p2.addWidget(self.mFieldComboBox_dyke)
         vbox.addLayout(row_p2)
 
