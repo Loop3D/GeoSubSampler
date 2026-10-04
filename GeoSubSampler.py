@@ -1150,8 +1150,17 @@ class GeoSubSampler:
                 dip_col = self._resolved_field(self.point_layer, dip_col)
                 dip_dir_col = self._resolved_field(self.point_layer, dip_dir_col)
 
+                # The engine expects dip direction. If the field holds strike,
+                # convert it exactly as setUpPointSampler does (the engine's
+                # strike = dipdir - 90 then recovers the original strike mod 180).
+                eff_dipdir_col = dip_dir_col
+                if not self.dockwidget.checkBox_dip_dir.isChecked():
+                    orientation_gdf['_eff_dipdir'] = (
+                        orientation_gdf[dip_dir_col].astype(float) - 90) % 360
+                    eff_dipdir_col = '_eff_dipdir'
+
                 # Create an instance of SubsamplingEngine
-                subsampler = SubsamplingEngine(dip=dip_col, dipdir=dip_dir_col)
+                subsampler = SubsamplingEngine(dip=dip_col, dipdir=eff_dipdir_col)
                 kwargs={}
                 kwargs['contact_gdf'] = contact_gdf
                 kwargs['dist_buffer']= distance_threshold
@@ -1159,6 +1168,8 @@ class GeoSubSampler:
 
 
                 output_gdf=subsampler.subsample("firstorder", orientation_gdf, path_out="", **kwargs)
+                if output_gdf is not None and '_eff_dipdir' in output_gdf.columns:
+                    output_gdf = output_gdf.drop(columns=['_eff_dipdir'])
 
                 if output_gdf is None or output_gdf.empty:
                     print("First Order: no measurements retained - check the polygon "
