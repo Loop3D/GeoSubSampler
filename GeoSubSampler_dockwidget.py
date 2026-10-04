@@ -250,7 +250,7 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         self._fault_group.addButton(self.radioButton_fault_graph)
         vbox.addWidget(self.radioButton_fault_graph)
 
-        self.radioButton_fault_strat_offset = QtWidgets.QRadioButton("Strat Offset  then Length")
+        self.radioButton_fault_strat_offset = QtWidgets.QRadioButton("Strat Offset  then Length [Requires Geology Polygon Priorities to be defined]")
         self._fault_group.addButton(self.radioButton_fault_strat_offset)
         vbox.addWidget(self.radioButton_fault_strat_offset)
 

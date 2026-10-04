@@ -278,9 +278,9 @@ class FaultsOrientations:
                 "center": centers[i],
                 "count": np.sum(mask),
                 "percentage": (np.sum(mask) / len(labels)) * 100,
-                "std_dev": np.std(cluster_trends),
-                "min_trend": np.min(cluster_trends),
-                "max_trend": np.max(cluster_trends),
+                "std_dev": np.std(cluster_trends) if len(cluster_trends) else np.nan,
+                "min_trend": np.min(cluster_trends) if len(cluster_trends) else np.nan,
+                "max_trend": np.max(cluster_trends) if len(cluster_trends) else np.nan,
             }
             cluster_stats.append(stats)
 
@@ -905,26 +905,40 @@ class FaultsOrientations:
 
             # Method 2: Compare different cluster numbers
             print("\nMethod 2: Comparing different cluster numbers")
-            cluster_numbers = list(range(2, 31))
-            print(f"Testing cluster numbers: {cluster_numbers}")
+            # Silhouette needs 2 <= k <= n_samples - 1, and k can't exceed the
+            # number of distinct azimuths, so cap k for small fault sets.
+            _az = gpd.read_file(shapefile_path)[azimuth_field].dropna().values
+            max_k = min(30, len(_az) - 1, len(np.unique(_az % 180)))
+            if max_k < 2:
+                print(f"Error: need at least 3 faults with distinct azimuths to "
+                      f"cluster (found {len(_az)}).")
+                return None
+            cluster_numbers = []
+            print(f"Testing cluster numbers: 2 to {max_k}")
             silhouette_scores = []
 
-            for n in cluster_numbers:
-                print(
-                    f"\nAnalyzing with {n} clusters...XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-                )
+            for n in range(2, max_k + 1):
                 layer_path = os.path.dirname(shapefile_path)
                 new_path = layer_path + "/" + layer_name + f"_fault_clusters_{n}.shp"
-                results = self.analyze_shapefile_trends(
-                    shapefile_path=shapefile_path,
-                    trend_field=azimuth_field,
-                    n_clusters=n,
-                    output_shapefile=new_path,
-                )
+                try:
+                    results = self.analyze_shapefile_trends(
+                        shapefile_path=shapefile_path,
+                        trend_field=azimuth_field,
+                        n_clusters=n,
+                        output_shapefile=new_path,
+                    )
+                except Exception as e:
+                    print(f"{n} clusters failed ({e}) - skipping")
+                    continue
+                cluster_numbers.append(n)
                 silhouette_scores.append(results["silhouette_score"])
                 print(
                     f"{n} clusters - Silhouette score: {results['silhouette_score']:.3f}"
                 )
+
+            if not silhouette_scores:
+                print("Error: clustering failed for every cluster count.")
+                return None
 
             best_idx = np.argmax(silhouette_scores)
             best_n = cluster_numbers[best_idx]
