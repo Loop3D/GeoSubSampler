@@ -935,8 +935,8 @@ class GeoSubSampler:
                 shutil.rmtree(tmpdir, ignore_errors=True)
 
         elif method == 'strat_offset':
-            has_strat = any('strat' in c.lower() or 'offset' in c.lower()
-                            for c in gdf.columns)
+            has_strat = ('max_off_lv' in gdf.columns or any(
+                'strat' in c.lower() or 'offset' in c.lower() for c in gdf.columns))
             strat_columns = [c for c in [strat1, strat2, strat3, strat4] if c]
             if (not has_strat and strat_columns
                     and polygon_layer and os.path.exists(self._resolved_source(polygon_layer))):

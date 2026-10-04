@@ -293,6 +293,31 @@ def _edge_type_rank(edge_type):
     return 1
 
 
+def _find_offset_column(columns):
+    """
+    Column holding the stratigraphic offset level from FaultStratOffset.
+
+    The tool writes ``max_off_lv`` (0 = no offset, 1..n = offset detected at
+    priority field k, -1 = fault at edge of map, empty = no data). That name
+    contains neither 'strat' nor 'offset', so look for it explicitly before
+    falling back to any column that looks like an offset/strat field.
+    """
+    for preferred in ('max_off_lv', 'max_offset_level'):
+        if preferred in columns:
+            return preferred
+    return next((c for c in columns
+                 if 'strat' in c.lower() or 'offset' in c.lower()), None)
+
+
+def _offset_rank(series):
+    """
+    Numeric rank for sorting faults by offset level, highest = kept longest.
+    Edge-of-map (-1) and no-data (NaN) faults are ranked below 'no offset' (0).
+    """
+    vals = pd.to_numeric(series, errors='coerce')
+    return vals.where(vals >= 0, -1).fillna(-1)
+
+
 def scale_lines_tp(gdf, ratio, method, info=None):
     """
     Reduce a line GeoDataFrame to TN = ON*(OS/TS)^1 features.
@@ -331,8 +356,7 @@ def scale_lines_tp(gdf, ratio, method, info=None):
         if method == 'graph' and 'edge_type' in result.columns:
             result['tp_sel_val'] = _to_str(result['edge_type'])
         elif method == 'strat_offset':
-            strat_col = next((c for c in result.columns
-                              if 'strat' in c.lower() or 'offset' in c.lower()), None)
+            strat_col = _find_offset_column(result.columns)
             result['tp_sel_val'] = _to_str(
                 pd.to_numeric(result[strat_col], errors='coerce') if strat_col
                 else pd.Series([''] * len(result), index=result.index))
@@ -365,16 +389,19 @@ def scale_lines_tp(gdf, ratio, method, info=None):
         info['criterion'] = 'length (edge_type column absent - fallback)'
 
     elif method == 'strat_offset':
-        strat_col = next(
-            (c for c in work.columns
-             if 'strat' in c.lower() or 'offset' in c.lower()),
-            None
-        )
+        strat_col = _find_offset_column(work.columns)
         if strat_col:
-            work['_sort'] = pd.to_numeric(work[strat_col], errors='coerce').abs()
+            # Highest offset level first; no-offset (0) next; edge-of-map / no-data
+            # last; ties broken by length.
+            work['_sort'] = _offset_rank(work[strat_col])
             work = work.sort_values(['_sort', '_len'], ascending=False)
             work['tp_sel_val'] = _to_str(pd.to_numeric(work[strat_col], errors='coerce'))
-            info['criterion'] = f'abs({strat_col}) then length'
+            info['criterion'] = (f'{strat_col} (offset level, highest first; none then '
+                                 f'edge-of-map last), then length')
+            kept_levels = work.head(n_keep)[strat_col].value_counts(dropna=False)
+            info['offset_levels_kept'] = ', '.join(
+                f'{"none" if pd.isna(k) else k}:{v}' for k, v in sorted(
+                    kept_levels.items(), key=lambda kv: (pd.isna(kv[0]), kv[0])))
         else:
             work = work.sort_values('_len', ascending=False)
             work['tp_sel_val'] = ''
