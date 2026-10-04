@@ -1619,6 +1619,18 @@ class GeoSubSampler:
             "Run the selected subsampling method on the point layer"
         )
 
+        target_n_tip = (
+            "Grid Cell Avg, Kent and Kent Outlier only.\n"
+            "Instead of using the Grid Size box, search for the grid cell size that gives "
+            "approximately N output points (within ±15%). The grid size found is written back "
+            "into the Grid Size box of the selected method.\n"
+            "Several trial runs are needed, so this is slower. Ignored by Stochastic and 1o Sampling."
+        )
+        self.dockwidget.checkBox_target_n.setToolTip(target_n_tip)
+        self.dockwidget.spinBox_target_n.setToolTip(
+            "Desired number of output points (used when 'Auto-fit to N pts' is ticked). "
+            "The result is approximate (±15%) and cannot exceed the number of occupied grid cells."
+        )
         self.dockwidget.radioButton_1o.setToolTip(
             "First order retention of points based on distance and angle to contacts.\n"
             "Requires a polygon layer (selected in the map polygons box) that overlaps the points - "
