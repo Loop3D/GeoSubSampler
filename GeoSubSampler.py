@@ -1647,9 +1647,9 @@ class GeoSubSampler:
         self.dockwidget.mFieldComboBox_priority_5.setToolTip(
             "Field selected for 5th priority of polygon merging and fault strat offset"
         )
-        self.dockwidget.mFieldComboBox_dyke.setToolTip("Field selected for dyke codes")
+        self.dockwidget.mFieldComboBox_dyke.setToolTip("Field selected for ignore codes")
         self.dockwidget.plainTextEdit_dyke_Codes.setToolTip(
-            "Comma separated list of dyke codes for special handling"
+            "Comma separated list of ignore codes for special handling"
         )
         self.dockwidget.lineEdit_polygon_area.setToolTip(
             "Minimum threshold diameter of polygons to be retained (in km)"
