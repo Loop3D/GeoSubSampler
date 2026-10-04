@@ -65,7 +65,7 @@ from .calcs.FaultsGraph import FaultsGraph
 from .calcs.FaultStratOffset import FaultStratOffset
 from .calcs.FaultClusterOrientation import FaultsOrientations
 from .calcs.FirstOrderOrientation import SubsamplingEngine, save_grid_to_shapefile
-from .calcs.TopferPillewizer import topfer_count, scale_iterations, scale_points_tp, scale_lines_tp, scale_polygons_tp
+from .calcs.TopferPillewizer import dipdir_to_strike, topfer_count, scale_iterations, scale_points_tp, scale_lines_tp, scale_polygons_tp
 from .calcs.PolygonSimplification import SimplificationEngine, vector_simplify_file_two_stage
 import geopandas as gpd
 import os
@@ -664,6 +664,20 @@ class GeoSubSampler:
 
         return best_cs, best_n
 
+    def _restore_strike(self, gdf2, gdf_in, dip_dir_col):
+        """
+        The grid/Kent engines average dip direction. When the input field holds
+        strike (Dip Direction box unticked) it was converted with
+        dipdir = strike - 90, so convert the averaged values back, otherwise the
+        output strikes come out rotated 90 degrees anticlockwise.
+        """
+        if (not self.dockwidget.checkBox_dip_dir.isChecked()
+                and dip_dir_col in gdf2.columns):
+            gdf2 = gdf2.copy()
+            gdf2[dip_dir_col] = dipdir_to_strike(
+                gdf2[dip_dir_col], gdf_in.get(dip_dir_col))
+        return gdf2
+
     def gridCellAveraging(self):
         result = self.setUpPointSampler()
         if not result:
@@ -698,6 +712,7 @@ class GeoSubSampler:
             gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
             gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
                 columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
+            gdf2 = self._restore_strike(gdf2, gdf, dip_dir_col)
             self.finalisePointSampler(gdf2, self.points_layer, "gridCellAveraging", display_size)
 
     def kent(self):
@@ -734,6 +749,7 @@ class GeoSubSampler:
             gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
             gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
                 columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
+            gdf2 = self._restore_strike(gdf2, gdf, dip_dir_col)
             self.finalisePointSampler(gdf2, self.points_layer, "grid_cell_kent", display_size)
 
     def kentOutlier(self):
@@ -770,6 +786,7 @@ class GeoSubSampler:
             gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
             gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
                 columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
+            gdf2 = self._restore_strike(gdf2, gdf, dip_dir_col)
             self.finalisePointSampler(gdf2, self.points_layer, "grid_cell_kentOutlier", display_size)
 
     def _validate_dip_fields(self, require_points_layer):
@@ -1115,7 +1132,8 @@ class GeoSubSampler:
                 pt_scaled = scale_points_tp(
                     original_pt_gdf, iter_ratio, pt_engine, point_method,
                     pt_dip_col, pt_dip_dir_col, grid_sz,
-                    firstorder_kwargs=firstorder_kwargs, info=pt_info)
+                    firstorder_kwargs=firstorder_kwargs, info=pt_info,
+                    strike_input=not self.dockwidget.checkBox_dip_dir.isChecked())
                 add_report(f"ratio {ratio_tag}", iter_ratio, iter_ratio, 'points',
                            point_method, len(original_pt_gdf), len(pt_scaled), pt_info)
                 tn_expected = topfer_count(len(original_pt_gdf), iter_ratio, x=1)

@@ -40,6 +40,23 @@ def topfer_count(on, ratio, x):
     return max(1, round(on * (ratio ** (x / 2.0))))
 
 
+def dipdir_to_strike(dipdir_values, original_values=None):
+    """
+    Convert averaged dip-direction values back to strike.
+
+    Input strike is converted to dip direction as ``dipdir = strike - 90`` before
+    the grid/Kent engines average it, so the inverse is ``strike = dipdir + 90``.
+    If the original strikes all lie within 0-180 the result is kept in 0-180
+    (strike is axial), otherwise in 0-360.
+    """
+    strike = (pd.to_numeric(dipdir_values, errors='coerce') + 90) % 360
+    if original_values is not None:
+        orig = pd.to_numeric(original_values, errors='coerce').dropna()
+        if len(orig) and orig.max() <= 180:
+            strike = strike % 180
+    return strike
+
+
 def scale_iterations(target_ratio, increment):
     """
     Build the sequence of OS/TS ratios for iterative T&P scaling.
@@ -87,7 +104,8 @@ def _count_grid(engine, method, gdf, min_x, max_x, min_y, max_y, gs):
 
 
 def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
-                    grid_size=5000, firstorder_kwargs=None, info=None):
+                    grid_size=5000, firstorder_kwargs=None, info=None,
+                    strike_input=False):
     """
     Reduce a point GeoDataFrame to TN = ON*(OS/TS)^0.5 using the chosen method.
 
@@ -235,6 +253,9 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
 
     if result is not None and not result.empty:
         result = result.rename(columns={'DIP': dip_col, 'DIP_DIR': dipdir_col}, errors='ignore')
+        if strike_input and dipdir_col in result.columns:
+            # engine averaged dip direction; restore the input's strike convention
+            result[dipdir_col] = dipdir_to_strike(result[dipdir_col], gdf.get(dipdir_col))
         return result.set_crs(gdf.crs, allow_override=True)
 
     # Fallback to stochastic if grid method yielded nothing

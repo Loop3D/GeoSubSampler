@@ -405,8 +405,10 @@ class SubsamplingEngine:
                   encoding="utf-8") as out:
             out.write(','.join(fieldnames) + '\n')
             for (cx, cy), group in df.groupby(['_cx', '_cy']):
-                centx = minx + (cx + 0.5) * n
-                centy = miny + (cy + 0.5) * n
+                # Output at the mean position of the input points, not the cell
+                # centre, so a single point in a cell stays where it was.
+                centx = float(group[self.easting].mean())
+                centy = float(group[self.northing].mean())
                 dip_val, dipdir_val = self._calc_mean_orientation(group)
                 dip_str    = ('NaN' if math.isnan(dip_val)
                               else str(int(dip_val)))
@@ -463,8 +465,9 @@ class SubsamplingEngine:
                   encoding="utf-8") as out:
             out.write(','.join(fieldnames) + '\n')
             for (cx, cy), group in df.groupby(['_cx', '_cy']):
-                centx = minx + (cx + 0.5) * n
-                centy = miny + (cy + 0.5) * n
+                # Mean position of the input points (see gridcell_average)
+                centx = float(group[self.easting].mean())
+                centy = float(group[self.northing].mean())
                 dip2, dipdir2 = self._calc_mean_orientation(group)
                 cnt, kappa, beta = self._calc_kent(group)
                 dip2_str = (
@@ -540,6 +543,9 @@ class SubsamplingEngine:
 
                 removed_idx, _ = max(delta_kappas, key=lambda x: x[1])
                 final_grid = grid.drop(index=removed_idx)
+                # Mean position of the retained points, not the cell centre
+                centx = float(final_grid[self.easting].mean())
+                centy = float(final_grid[self.northing].mean())
                 dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
                 cnt, kappa, beta = self._calc_kent(final_grid)
                 out.write(f"{centx:.8f},{centy:.8f},{int(dip_f)},{int(dipdir_f)},"
@@ -656,6 +662,9 @@ class SubsamplingEngine:
                                        if idx not in outlier_set]
                         final_grid  = grid.loc[kept]
 
+                    # Mean position of the retained points, not the cell centre
+                    centx = float(final_grid[self.easting].mean())
+                    centy = float(final_grid[self.northing].mean())
                     dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
                     if math.isnan(dip_f) or math.isnan(dipdir_f):
                         out.write(f"{centx:.8f},{centy:.8f},-999,-999,"
