@@ -3,7 +3,7 @@
 GeoSubSamplerDockWidget — pure-Python UI (no .ui file required).
 """
 
-from qgis.PyQt import QtGui, QtWidgets
+from qgis.PyQt import QtWidgets
 from qgis.PyQt.QtCore import pyqtSignal, Qt
 from qgis.gui import QgsMapLayerComboBox, QgsFieldComboBox, QgsDoubleSpinBox
 from qgis.core import QgsFieldProxyModel
@@ -188,25 +188,21 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         row_target.addStretch()
         vbox.addLayout(row_target)
 
-        vbox.addWidget(self._hline())
-
-        # 1o Sampling — separate standalone button
-        self.pushButton_1o_sampling = QtWidgets.QPushButton("1o Sampling")
-        f8 = QtGui.QFont()
-        f8.setPointSize(8)
-        self.pushButton_1o_sampling.setFont(f8)
+        # (o) 1o Sampling — fired by the shared Subsample Points button
+        self.radioButton_1o = QtWidgets.QRadioButton("1o Sampling")
         self.lineEdit_1o_distance = QtWidgets.QLineEdit("1000")
         self.lineEdit_1o_distance.setFixedWidth(70)
         self.lineEdit_1o_angle = QtWidgets.QLineEdit("15")
         self.lineEdit_1o_angle.setFixedWidth(50)
         row_1o = QtWidgets.QHBoxLayout()
-        row_1o.addWidget(self.pushButton_1o_sampling)
+        row_1o.addWidget(self.radioButton_1o)
         row_1o.addWidget(self._lbl("Distance"))
         row_1o.addWidget(self.lineEdit_1o_distance)
         row_1o.addWidget(self._lbl("Angle"))
         row_1o.addWidget(self.lineEdit_1o_angle)
         row_1o.addStretch()
         vbox.addLayout(row_1o)
+        self._subsample_group.addButton(self.radioButton_1o)
 
         layout.addWidget(grp)
 

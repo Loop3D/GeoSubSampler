@@ -814,6 +814,8 @@ class GeoSubSampler:
             self.kent()
         elif self.dockwidget.radioButton_kent_outlier.isChecked():
             self.kentOutlier()
+        elif self.dockwidget.radioButton_1o.isChecked():
+            self.firstOrder()
 
     def processFaults(self):
         if self.dockwidget.radioButton_fault_length.isChecked():
@@ -1617,8 +1619,10 @@ class GeoSubSampler:
             "Run the selected subsampling method on the point layer"
         )
 
-        self.dockwidget.pushButton_1o_sampling.setToolTip(
-            "First order retention of points based on distance and angle to contacts"
+        self.dockwidget.radioButton_1o.setToolTip(
+            "First order retention of points based on distance and angle to contacts.\n"
+            "Requires a polygon layer (selected in the map polygons box) that overlaps the points - "
+            "its boundaries are used as the contacts."
         )
         self.dockwidget.lineEdit_1o_distance.setToolTip(
             "Distance buffer for first order retention of points"
@@ -1784,8 +1788,6 @@ class GeoSubSampler:
 
             self.dockwidget.pushButton_subsample_points.clicked.connect(
                 self._guard(self.subsamplePoints, "Point subsampling"))
-            self.dockwidget.pushButton_1o_sampling.clicked.connect(
-                self._guard(self.firstOrder, "First order sampling"))
 
             self.dockwidget.pushButton_minPolyArea.clicked.connect(
                 self._guard(self.minPolyArea, "Polygon cleaning"))
