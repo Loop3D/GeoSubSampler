@@ -143,12 +143,14 @@ class PolygonTriangulator:
                             'orig_id': str(row[self.id_column]),
                             'area': triangle.area,
                             'geometry': triangle,
-                            self.strat1:f"{tri_id}",
-                            self.strat2: f"{tri_id}",
-                            self.strat3: f"{tri_id}",
-                            self.strat4: f"{tri_id}",
-                            self.lithoname: f"{tri_id}"
                         }
+                        # Unique value in each priority field so a triangle never
+                        # matches a neighbour on stratigraphy/lithology. Skip unset
+                        # (blank) fields, which would create a blank-named column.
+                        for _fld in (self.strat1, self.strat2, self.strat3,
+                                     self.strat4, self.lithoname):
+                            if _fld:
+                                triangle_record[_fld] = f"{tri_id}"
                         
                         # Add random field values
                         for field_name, field_type in field_config.items():

@@ -296,6 +296,7 @@ class StructuralPolygonSubSampler:
                     
                     candidates.append({
                         'idx': idx,
+                        'is_tri': get_field_value(candidate_row, 'rec_type') == 'triangle',
                         'shared_length': shared_length,
                         'litho': cand_litho,
                         'strat1': cand_strat1,
@@ -306,7 +307,19 @@ class StructuralPolygonSubSampler:
             
             if not candidates:
                 return None, 0, "no_neighbors"
-            
+
+            # Triangles come from triangulating an ignore-code polygon (e.g. a dyke)
+            # so its area can be shared out locally between the real units either
+            # side of it. If triangles were allowed to merge into each other first,
+            # a long thin dyke would chain into one piece and go entirely to
+            # whichever unit has most boundary, painting that unit across the
+            # dyke even where it crosses other units. So prefer real neighbours;
+            # only fall back to triangle neighbours when no real one is touching
+            # (such triangles are picked up on a later iteration).
+            real_candidates = [c for c in candidates if not c['is_tri']]
+            if real_candidates:
+                candidates = real_candidates
+
             # Apply hierarchical preferences
             best_candidate = None
             merge_reason = "fallback_boundary_length"

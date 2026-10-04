@@ -576,10 +576,20 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
     # Optional dyke pre-processing (once, before merging)
     if (dyke_field and dyke_codes and triangulator_class is not None
             and dyke_field in work.columns):
+        # A polygon is only triangulated if its area is below the threshold, so
+        # the threshold must be the area below which this step will remove
+        # polygons (the same cut the bulk merge below uses). With a threshold of
+        # 0 nothing is triangulated and an ignore-code polygon such as a dyke is
+        # merged whole into the neighbour with the longest boundary, painting that
+        # unit across the dyke even where it crosses other units.
+        _areas0 = np.sort(work.geometry.area.values)
+        _n_remove0 = max(1, on - tn)
+        tri_threshold = float(_areas0[min(_n_remove0 - 1, len(_areas0) - 1)]) * (1.0 + 1e-9) + 1e-6
+        info['dyke_triangulation_threshold'] = tri_threshold
         trig = triangulator_class(
             gdf=work,
             id_column=dyke_field,
-            min_area_threshold=0.0,
+            min_area_threshold=tri_threshold,
             distance_threshold=distance_threshold,
             strat1=strat1, strat2=strat2, strat3=strat3, strat4=strat4,
             lithoname=lithoname,
@@ -587,6 +597,12 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
         work = trig.triangulate_polygons(target_ids=dyke_codes)
         info['dyke_field'] = dyke_field
         info['dyke_codes'] = ', '.join(str(c) for c in dyke_codes)
+        s = getattr(trig, 'last_summary', None)
+        if s:
+            info['dyke_polygons_matched'] = s['matched']
+            info['dyke_polygons_triangulated'] = s['triangulated']
+            if s['codes_not_found']:
+                info['dyke_codes_not_found'] = ', '.join(s['codes_not_found'])
 
     merge_kwargs = dict(
         distance_threshold=distance_threshold,
@@ -608,7 +624,10 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
     if n_current > tn:
         n_remove = n_current - tn
         areas = work.geometry.area.sort_values().values
-        idx = min(n_remove, len(areas) - 1)
+        # The n_remove smallest polygons are areas[0 .. n_remove-1]; the threshold
+        # must sit just above the largest of those so exactly n_remove (not
+        # n_remove + 1) polygons fall below it.
+        idx = min(n_remove - 1, len(areas) - 1)
         threshold = float(areas[idx]) * (1.0 + 1e-9) + 1e-6
         info['min_area_threshold'] = threshold
         try:
