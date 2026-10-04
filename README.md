@@ -153,9 +153,9 @@ Define the hierarchy for polygon merging decisions:
   - *Description*: Used for lithological classification during polygon processing
 
 #### Dyke/Intrusion Handling
-- **Dyke Field**: Field identifying intrusive bodies
+- **Ignore Field**: Field identifying polygons that are removed by triangulation then merging, not by merging
   - *Type*: Attribute field
-- **Dyke Codes**: Comma-separated list of codes identifying dykes/intrusions
+- **Ignore Codes**: Comma-separated list of codes identifying dykes/intrusions/alluvium that are best removed by triangulation, given their aspect ratio
   - *Format*: Text list (e.g., DY1, DY2, INTX-D )
   - *Description*: Special processing applied to polygons with these codes
 
