@@ -442,10 +442,36 @@ class GeoSubSampler:
             )
             return False
 
+    def _warn(self, message, level=Qgis.Warning, duration=15):
+        """Print to the console and show the message at the top of the QGIS pane."""
+        print(message)
+        self.iface.messageBar().pushMessage(message, level=level, duration=duration)
+
+    def _guard(self, fn, label):
+        """
+        Wrap a button handler so an unexpected exception is reported at the top
+        of the pane (and traceback printed to the console) instead of failing
+        silently. Qt's clicked(bool) argument is deliberately dropped.
+        """
+        def wrapper(*_args):
+            try:
+                fn()
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                detail = str(exc)
+                if "NoneType" in detail:
+                    detail = "a required layer is not selected (" + detail + ")"
+                self._warn(f"{label} failed: {detail}", level=Qgis.Critical, duration=20)
+        return wrapper
+
     def _add_layer_with_style(self, new_layer, source_layer, fail_msg=''):
         """Add new_layer to the project and copy style from source_layer."""
         if not new_layer.isValid():
-            print(f"Failed to load layer: {fail_msg or new_layer.name()}")
+            self._warn(
+                f"Failed to load result layer '{fail_msg or new_layer.name()}' - "
+                f"the tool produced no output (see console).",
+                level=Qgis.Critical)
             return
         try:
             from qgis.PyQt.QtXml import QDomDocument
@@ -489,7 +515,36 @@ class GeoSubSampler:
             )
         # print("new_path_2:", new_path)
         # Write GeoPandas back to file
-        gdf2.to_file(new_path, driver="ESRI Shapefile")
+        if gdf2.empty:
+            # An empty GeoDataFrame has no geometry to infer a type from and
+            # gets written as a polyline layer; force an explicit Point schema.
+            def _field_type(dtype):
+                if pd.api.types.is_integer_dtype(dtype):
+                    return "int"
+                if pd.api.types.is_float_dtype(dtype):
+                    return "float"
+                return "str"
+            schema = {
+                "geometry": "Point",
+                "properties": {
+                    c: _field_type(gdf2[c].dtype)
+                    for c in gdf2.columns if c != gdf2.geometry.name
+                },
+            }
+            try:
+                # pyogrio engine ignores `schema` but honours geometry_type
+                gdf2.to_file(new_path, driver="ESRI Shapefile",
+                             engine="pyogrio", geometry_type="Point")
+            except Exception:
+                gdf2.to_file(new_path, driver="ESRI Shapefile", schema=schema)
+            self.iface.messageBar().pushMessage(
+                "No points were retained - an empty point layer was created. "
+                "Check that the polygon and point layers overlap.",
+                level=Qgis.Warning,
+                duration=15,
+            )
+        else:
+            gdf2.to_file(new_path, driver="ESRI Shapefile")
 
         # reload as layer
         upscaled_layer = QgsVectorLayer(
@@ -790,7 +845,7 @@ class GeoSubSampler:
                 if os.path.exists(tmp_edges):
                     return gpd.read_file(tmp_edges).set_crs(gdf.crs, allow_override=True)
             except Exception as exc:
-                print(f"T&P: graph pre-compute failed: {exc}")
+                self._warn(f"T&P: fault graph pre-compute failed: {exc}")
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -818,7 +873,7 @@ class GeoSubSampler:
                 if best_gdf is not None:
                     return best_gdf.set_crs(gdf.crs, allow_override=True)
             except Exception as exc:
-                print(f"T&P: cluster pre-compute failed: {exc}")
+                self._warn(f"T&P: fault cluster pre-compute failed: {exc}")
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -839,7 +894,7 @@ class GeoSubSampler:
                     if os.path.exists(tmp_out):
                         return gpd.read_file(tmp_out).set_crs(gdf.crs, allow_override=True)
                 except Exception as exc:
-                    print(f"T&P: strat-offset pre-compute failed: {exc}")
+                    self._warn(f"T&P: strat-offset pre-compute failed: {exc}")
                 finally:
                     shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -1054,7 +1109,8 @@ class GeoSubSampler:
                     )
                     current_polygon_gdf = poly_scaled
                 except Exception as exc:
-                    print(f"T&P polygon scaling error at ratio {iter_ratio}: {exc}")
+                    self._warn(f"T&P polygon scaling failed at ratio {iter_ratio}; "
+                               f"unscaled polygons written: {exc}")
                     poly_scaled = current_polygon_gdf.copy()
 
                 layer_path = os.path.dirname(self._resolved_source(polygon_layer))
@@ -1089,7 +1145,7 @@ class GeoSubSampler:
                 dip_col = self.dockwidget.mFieldComboBox_dip.currentText()
                 dip_dir_col = self.dockwidget.mFieldComboBox_dip_dir.currentText()
                 if not dip_col or not dip_dir_col:
-                    print("First Order: please select DIP and DIP_DIR fields before running.")
+                    self._warn("First Order: please select DIP and DIP_DIR fields before running.")
                     return
                 dip_col = self._resolved_field(self.point_layer, dip_col)
                 dip_dir_col = self._resolved_field(self.point_layer, dip_dir_col)
@@ -1104,6 +1160,12 @@ class GeoSubSampler:
 
                 output_gdf=subsampler.subsample("firstorder", orientation_gdf, path_out="", **kwargs)
 
+                if output_gdf is None or output_gdf.empty:
+                    print("First Order: no measurements retained - check the polygon "
+                          "and point layers overlap and the distance/angle settings.")
+                    # the message-bar warning is raised by finalisePointSampler
+                    if output_gdf is None:
+                        return
 
                 # Write GeoPandas back to file and reload
                 self.finalisePointSampler(
@@ -1322,7 +1384,7 @@ class GeoSubSampler:
                 )
 
             if not strat_columns:
-                print("Fault Strat Offset: please select at least one priority field before running.")
+                self._warn("Fault Strat Offset: please select at least one priority field before running.")
                 return
 
             strat_columns = [self._resolved_field(self.map_layer, c) for c in strat_columns]
@@ -1408,6 +1470,13 @@ class GeoSubSampler:
                 self.dockwidget.mMapLayerComboBox_fault_polylines.currentText(),
                 azimuth_field="endpt_az",
             )
+            if best_n is None:
+                self.iface.messageBar().pushMessage(
+                    "Could not cluster faults - too few faults with distinct orientations (see console).",
+                    level=Qgis.Warning,
+                    duration=15,
+                )
+                return
             layer_path = os.path.dirname(self._resolved_source(self.polyline_layer))
             new_path = (
                 layer_path
@@ -1437,6 +1506,7 @@ class GeoSubSampler:
         polygon_layer = self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
         fault_layer = self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         if polygon_layer is None or fault_layer is None:
+            self._warn("Map simplification: select both a polygon layer and a fault layer.")
             return
         area_tolerance = int(self.dockwidget.lineEdit_area_tolerance.text())
         input_file = self._resolved_source(polygon_layer)
@@ -1701,18 +1771,23 @@ class GeoSubSampler:
                 self.updateMapsFields
             )
 
-            self.dockwidget.pushButton_subsample_points.clicked.connect(self.subsamplePoints)
-            self.dockwidget.pushButton_1o_sampling.clicked.connect(self.firstOrder)
+            self.dockwidget.pushButton_subsample_points.clicked.connect(
+                self._guard(self.subsamplePoints, "Point subsampling"))
+            self.dockwidget.pushButton_1o_sampling.clicked.connect(
+                self._guard(self.firstOrder, "First order sampling"))
 
-            self.dockwidget.pushButton_minPolyArea.clicked.connect(self.minPolyArea)
+            self.dockwidget.pushButton_minPolyArea.clicked.connect(
+                self._guard(self.minPolyArea, "Polygon cleaning"))
 
             self.dockwidget.pushButton_merge_segments.clicked.connect(
-                self.mergeSegments
+                self._guard(self.mergeSegments, "Fault segment merging")
             )
-            self.dockwidget.pushButton_process_faults.clicked.connect(self.processFaults)
-            self.dockwidget.pushButton_tp_run.clicked.connect(self.topferPillewizer)
+            self.dockwidget.pushButton_process_faults.clicked.connect(
+                self._guard(self.processFaults, "Fault processing"))
+            self.dockwidget.pushButton_tp_run.clicked.connect(
+                self._guard(self.topferPillewizer, "Töpfer & Pillewizer scaling"))
             self.dockwidget.pushButton_simplifyMap.clicked.connect(
-                self.simplifyMap
+                self._guard(self.simplifyMap, "Map simplification")
             )
             self.dockwidget.mFieldComboBox_dip.setAllowEmptyFieldName(True)
             self.dockwidget.mFieldComboBox_dip.setCurrentIndex(0)
