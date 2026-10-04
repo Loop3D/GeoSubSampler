@@ -71,6 +71,7 @@ import geopandas as gpd
 import os
 import random
 import re
+import csv
 import time
 import math
 import pandas as pd
@@ -939,6 +940,8 @@ class GeoSubSampler:
             point_method = 'gridcell_average'
         elif self.dockwidget.radioButton_kent.isChecked():
             point_method = 'spherical_kent'
+        elif self.dockwidget.radioButton_1o.isChecked():
+            point_method = 'firstorder'
         else:
             point_method = 'outlier_removal'
 
@@ -1012,17 +1015,68 @@ class GeoSubSampler:
         except ValueError:
             grid_sz = 5000.0
 
+        # First order needs the polygon boundaries as contacts, plus the
+        # distance/angle limits; the T&P target count then picks the best-ranked
+        # points within those limits.
+        firstorder_kwargs = None
+        if point_method == 'firstorder' and current_pt_gdf is not None:
+            if current_polygon_gdf is None:
+                self._warn("T&P with 1o Sampling needs a polygon layer for the contacts.")
+                return
+            try:
+                fo_dist = float(self.dockwidget.lineEdit_1o_distance.text())
+                fo_angle = float(self.dockwidget.lineEdit_1o_angle.text())
+            except ValueError:
+                self._warn("T&P with 1o Sampling: enter valid numbers for Distance and Angle.")
+                return
+            fo_contacts = current_polygon_gdf[['geometry']].copy()
+            fo_contacts['geometry'] = current_polygon_gdf.boundary
+            firstorder_kwargs = {
+                'contact_gdf': fo_contacts,
+                'dist_buffer': fo_dist,
+                'angle_tol': fo_angle,
+            }
+
         # Points are always subsampled from the original full dataset using the
         # absolute cumulative ratio, so results at each scale are independent.
         # Lines and polygons chain incrementally (each step feeds the next).
         original_pt_gdf = current_pt_gdf  # never mutated
 
+        # --- Report: one row per layer per step, written when the run finishes ---
+        report_rows = []
+        orig_counts = {
+            'points': len(original_pt_gdf) if original_pt_gdf is not None else None,
+            'faults': len(current_fault_gdf) if current_fault_gdf is not None else None,
+            'polygons': len(current_polygon_gdf) if current_polygon_gdf is not None else None,
+        }
+        exponent = {'points': 1, 'faults': 2, 'polygons': 3}
+
+        def add_report(step, ratio_val, step_ratio_val, layer, method, n_in, n_out, info):
+            on0 = orig_counts[layer]
+            report_rows.append({
+                'step': step,
+                'OS/TS ratio': ratio_val,
+                'step ratio': step_ratio_val,
+                'layer': layer,
+                'method': method,
+                'input count': n_in,
+                'target count (from original)': topfer_count(on0, ratio_val, exponent[layer]),
+                'output count': n_out,
+                'parameters used': '; '.join(
+                    f"{k}={v:.6g}" if isinstance(v, float) else f"{k}={v}"
+                    for k, v in info.items() if k != 'method'),
+            })
+
         # --- Ratio=1 baseline: all layers at full extent ---
         if original_pt_gdf is not None:
             self.finalisePointSampler(original_pt_gdf, self.points_layer, "tp_1")
+            add_report('baseline', 1.0, 1.0, 'points', 'none (all kept)',
+                       len(original_pt_gdf), len(original_pt_gdf), {})
 
         if current_fault_gdf is not None:
             ln_full = scale_lines_tp(current_fault_gdf, 1.0, fault_method)
+            add_report('baseline', 1.0, 1.0, 'faults', fault_method,
+                       len(current_fault_gdf), len(ln_full), {})
             layer_path = os.path.dirname(self._resolved_source(fault_layer))
             out_name = f"{fault_layer.name()}_tp_1.shp"
             out_path = os.path.join(layer_path, out_name)
@@ -1043,6 +1097,8 @@ class GeoSubSampler:
             current_polygon_gdf.to_file(out_path, driver='ESRI Shapefile')
             poly_layer = QgsVectorLayer(out_path, f"{polygon_layer.name()}_tp_1", "ogr")
             self._add_layer_with_style(poly_layer, polygon_layer)
+            add_report('baseline', 1.0, 1.0, 'polygons', 'none (all kept)',
+                       len(current_polygon_gdf), len(current_polygon_gdf), {})
 
         prev_ratio = 1.0
         for iter_ratio in iterations:
@@ -1055,9 +1111,19 @@ class GeoSubSampler:
 
             # --- Points (always from original, absolute ratio) ---
             if original_pt_gdf is not None:
+                pt_info = {}
                 pt_scaled = scale_points_tp(
                     original_pt_gdf, iter_ratio, pt_engine, point_method,
-                    pt_dip_col, pt_dip_dir_col, grid_sz)
+                    pt_dip_col, pt_dip_dir_col, grid_sz,
+                    firstorder_kwargs=firstorder_kwargs, info=pt_info)
+                add_report(f"ratio {ratio_tag}", iter_ratio, iter_ratio, 'points',
+                           point_method, len(original_pt_gdf), len(pt_scaled), pt_info)
+                tn_expected = topfer_count(len(original_pt_gdf), iter_ratio, x=1)
+                if point_method == 'firstorder' and len(pt_scaled) < tn_expected:
+                    self._warn(
+                        f"T&P ratio {iter_ratio}: only {len(pt_scaled)} points pass the 1o "
+                        f"distance/angle limits (target {tn_expected}). Loosen the limits for more.",
+                        duration=10)
 
                 # Drop internal helper columns for the saved file
                 drop = [c for c in ['EASTING', 'NORTHING', '_eff_dipdir']
@@ -1078,7 +1144,12 @@ class GeoSubSampler:
                     current_fault_gdf = self._tp_prepare_fault_attrs(
                         current_fault_gdf, fault_method, fault_layer, polygon_layer,
                         strat1, strat2, strat3, strat4)
-                ln_scaled = scale_lines_tp(current_fault_gdf, step_ratio, fault_method)
+                ln_info = {}
+                n_ln_in = len(current_fault_gdf)
+                ln_scaled = scale_lines_tp(current_fault_gdf, step_ratio, fault_method,
+                                           info=ln_info)
+                add_report(f"ratio {ratio_tag}", iter_ratio, step_ratio, 'faults',
+                           fault_method, n_ln_in, len(ln_scaled), ln_info)
                 current_fault_gdf = ln_scaled
                 layer_path = os.path.dirname(self._resolved_source(fault_layer))
                 out_name   = f"{fault_layer.name()}_tp_{ratio_tag}.shp"
@@ -1094,6 +1165,8 @@ class GeoSubSampler:
 
             # --- Polygons ---
             if current_polygon_gdf is not None:
+                poly_info = {}
+                n_poly_in = len(current_polygon_gdf)
                 try:
                     poly_scaled = scale_polygons_tp(
                         current_polygon_gdf, step_ratio,
@@ -1108,12 +1181,17 @@ class GeoSubSampler:
                         dyke_codes=dyke_codes if dyke_field else None,
                         triangulator_class=(
                             PolygonTriangulator if dyke_field else None),
+                        info=poly_info,
                     )
                     current_polygon_gdf = poly_scaled
                 except Exception as exc:
                     self._warn(f"T&P polygon scaling failed at ratio {iter_ratio}; "
                                f"unscaled polygons written: {exc}")
+                    poly_info['note'] = f"FAILED, unscaled polygons written: {exc}"
                     poly_scaled = current_polygon_gdf.copy()
+                add_report(f"ratio {ratio_tag}", iter_ratio, step_ratio, 'polygons',
+                           'merge smallest into best-matching neighbour',
+                           n_poly_in, len(poly_scaled), poly_info)
 
                 layer_path = os.path.dirname(self._resolved_source(polygon_layer))
                 out_name   = f"{polygon_layer.name()}_tp_{ratio_tag}.shp"
@@ -1126,6 +1204,49 @@ class GeoSubSampler:
                     out_path,
                     f"{polygon_layer.name()}_tp_{ratio_tag}", "ogr")
                 self._add_layer_with_style(poly_layer, polygon_layer)
+
+        # --- Write the T&P report (CSV) next to the first available input layer ---
+        settings = {
+            'target OS/TS ratio': ratio,
+            'increment': increment,
+            'points layer': self.points_layer.name() if original_pt_gdf is not None else 'none',
+            'point method': point_method if original_pt_gdf is not None else 'n/a',
+            'fault layer': fault_layer.name() if current_fault_gdf is not None else 'none',
+            'fault method': fault_method if current_fault_gdf is not None else 'n/a',
+            'polygon layer': polygon_layer.name() if polygon_layer else 'none',
+            'polygon priority fields': ', '.join(
+                c for c in [strat1, strat2, strat3, strat4, lithoname] if c) or 'none',
+            'polygon node tolerance': dist_thresh,
+        }
+        if point_method == 'firstorder' and firstorder_kwargs:
+            settings['1o distance limit'] = firstorder_kwargs['dist_buffer']
+            settings['1o angle limit'] = firstorder_kwargs['angle_tol']
+        elif point_method in ('gridcell_average', 'spherical_kent', 'outlier_removal'):
+            settings['grid size starting guess'] = grid_sz
+        report_rows.insert(0, {
+            'step': 'settings', 'OS/TS ratio': '', 'step ratio': '', 'layer': 'all',
+            'method': '', 'input count': '', 'target count (from original)': '',
+            'output count': '',
+            'parameters used': '; '.join(f"{k}={v}" for k, v in settings.items()),
+        })
+        try:
+            ref_layer = next(l for l in (self.points_layer if original_pt_gdf is not None else None,
+                                         fault_layer if current_fault_gdf is not None else None,
+                                         polygon_layer if current_polygon_gdf is not None else None)
+                             if l is not None)
+            report_dir = os.path.dirname(self._resolved_source(ref_layer))
+            report_path = os.path.join(
+                report_dir, f"TP_scaling_report_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+            with open(report_path, 'w', newline='', encoding='utf-8-sig') as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(report_rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(report_rows)
+            self.iface.messageBar().pushMessage(
+                f"T&P scaling complete. Report written to {report_path}",
+                level=Qgis.Success, duration=15)
+            print(f"T&P report: {report_path}")
+        except Exception as exc:
+            self._warn(f"T&P scaling finished but the report could not be written: {exc}")
 
     def firstOrder(self):
         self.polygon_layer = (

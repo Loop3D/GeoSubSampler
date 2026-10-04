@@ -87,7 +87,7 @@ def _count_grid(engine, method, gdf, min_x, max_x, min_y, max_y, gs):
 
 
 def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
-                    grid_size=5000):
+                    grid_size=5000, firstorder_kwargs=None, info=None):
     """
     Reduce a point GeoDataFrame to TN = ON*(OS/TS)^0.5 using the chosen method.
 
@@ -96,17 +96,43 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
     so that the number of occupied cells matches TN — the analytical estimate
     sqrt(total_area/TN) fails for non-uniform / sparse data, so a proportional
     seed + binary search is used instead.
+
+    If ``info`` (a dict) is supplied it is filled with the parameters actually
+    used (fraction, final grid size, first-order limits, fallbacks) for the
+    T&P report.
     """
     from .FirstOrderOrientation import save_grid_to_shapefile
     import time
 
+    if info is None:
+        info = {}
     on = len(gdf)
     tn = topfer_count(on, ratio, x=1)
+    info['method'] = method
     if tn >= on:
+        info['note'] = 'target >= original count; all points kept'
         return gdf.copy()
+
+    # --- First order: keep the TN best-ranked points (closest to a contact and
+    # best aligned with it). Needs contact_gdf, dist_buffer and angle_tol in
+    # firstorder_kwargs. If fewer than TN points pass the first-order filters,
+    # all of them are returned.
+    if method == 'firstorder':
+        result = engine.firstorder(gdf, max_points=tn, **firstorder_kwargs)
+        info['distance_limit'] = firstorder_kwargs.get('dist_buffer')
+        info['angle_limit_deg'] = firstorder_kwargs.get('angle_tol')
+        info['points_passing_limits'] = getattr(engine, 'last_firstorder_n_pass', None)
+        info['selection'] = 'best-ranked by distance/limit + angle/limit'
+        if len(result) < tn:
+            info['note'] = f'only {len(result)} points pass the limits (target {tn})'
+        if len(result) < tn:
+            print(f"  T&P first order: only {len(result)} points pass the "
+                  f"distance/angle filters, fewer than the target {tn}.")
+        return result
 
     # --- Stochastic ---
     if method == 'stochastic':
+        info['fraction_retained'] = tn / on
         tmpdir = tempfile.mkdtemp()
         try:
             result = engine.stochastic(gdf, frac=tn / on,
@@ -131,6 +157,8 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
     n_ref = count(gs_ref)
     if n_ref == 0:
         # No data at all — fall back to stochastic
+        info['note'] = 'grid search found no data; fell back to stochastic'
+        info['fraction_retained'] = max(0.001, tn / on)
         tmpdir = tempfile.mkdtemp()
         try:
             result = engine.stochastic(gdf, frac=max(0.001, tn / on),
@@ -145,6 +173,7 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
     n1 = count(gs1)
 
     tol = 0.15
+    gs_n = n1
     if abs(n1 - tn) <= tol * tn:
         gs_best = gs1
     else:
@@ -181,6 +210,12 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
                 fine_gs = mid
             else:
                 coarse_gs = mid
+        gs_n = best_n
+
+    to_m = 110000.0 if is_geo else 1.0   # report grid sizes in metres
+    info['grid_size_start'] = gs_ref * to_m
+    info['grid_size_final'] = gs_best * to_m
+    info['cells_at_final_size'] = gs_n
 
     # Final run at best grid size
     tmpdir = tempfile.mkdtemp()
@@ -203,6 +238,8 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
         return result.set_crs(gdf.crs, allow_override=True)
 
     # Fallback to stochastic if grid method yielded nothing
+    info['note'] = 'grid method produced no output; fell back to stochastic'
+    info['fraction_retained'] = max(0.001, tn / on)
     tmpdir = tempfile.mkdtemp()
     try:
         result = engine.stochastic(gdf, frac=max(0.001, tn / on),
@@ -235,7 +272,7 @@ def _edge_type_rank(edge_type):
     return 1
 
 
-def scale_lines_tp(gdf, ratio, method):
+def scale_lines_tp(gdf, ratio, method, info=None):
     """
     Reduce a line GeoDataFrame to TN = ON*(OS/TS)^1 features.
 
@@ -254,8 +291,11 @@ def scale_lines_tp(gdf, ratio, method):
       clusters      — keep members of the largest orientation clusters;
                       falls back to length if no cluster field found
     """
+    if info is None:
+        info = {}
     on = len(gdf)
     tn = topfer_count(on, ratio, x=2)
+    info['method'] = method
 
     def _to_str(series):
         """Convert a Series to string, replacing NaN/None with ''."""
@@ -263,6 +303,7 @@ def scale_lines_tp(gdf, ratio, method):
 
     # Fast path: all features kept — add fields without sorting
     if tn >= on:
+        info['note'] = 'target >= current count; all faults kept'
         result = gdf.copy()
         if 'line_len' not in result.columns:
             result['line_len'] = result.geometry.length
@@ -295,10 +336,12 @@ def scale_lines_tp(gdf, ratio, method):
         work['_rank'] = work['edge_type'].apply(_edge_type_rank)
         work = work.sort_values(['_rank', '_len'], ascending=[True, False])
         work['tp_sel_val'] = _to_str(work['edge_type'])
+        info['criterion'] = 'edge_type rank (x-x > x-z/y-* > z-z), then length'
 
     elif method == 'graph':  # graph selected but edge_type column absent
         work = work.sort_values('_len', ascending=False)
         work['tp_sel_val'] = ''
+        info['criterion'] = 'length (edge_type column absent - fallback)'
 
     elif method == 'strat_offset':
         strat_col = next(
@@ -310,9 +353,11 @@ def scale_lines_tp(gdf, ratio, method):
             work['_sort'] = pd.to_numeric(work[strat_col], errors='coerce').abs()
             work = work.sort_values(['_sort', '_len'], ascending=False)
             work['tp_sel_val'] = _to_str(pd.to_numeric(work[strat_col], errors='coerce'))
+            info['criterion'] = f'abs({strat_col}) then length'
         else:
             work = work.sort_values('_len', ascending=False)
             work['tp_sel_val'] = ''
+            info['criterion'] = 'length (no strat-offset field - fallback)'
 
     elif method == 'clusters':
         cluster_col = next(
@@ -323,19 +368,24 @@ def scale_lines_tp(gdf, ratio, method):
             work['_csz'] = work[cluster_col].map(sizes)
             work = work.sort_values(['_csz', '_len'], ascending=[False, False])
             work['tp_sel_val'] = _to_str(work[cluster_col])
+            info['criterion'] = f'size of {cluster_col} cluster, then length'
         else:
             work = work.sort_values('_len', ascending=False)
             work['tp_sel_val'] = ''
+            info['criterion'] = 'length (no cluster field - fallback)'
 
     else:   # length
         work = work.sort_values('_len', ascending=False)
         work['tp_sel_val'] = _to_str(work['_len'])
+        info['criterion'] = 'length'
 
     if 'line_len' not in work.columns:
         work['line_len'] = work['_len']
 
     drop_cols = [c for c in ['_len', '_rank', '_sort', '_csz'] if c in work.columns]
-    return work.head(n_keep).drop(columns=drop_cols).reset_index(drop=True)
+    kept = work.head(n_keep)
+    info['shortest_fault_kept'] = float(kept['_len'].min()) if len(kept) else None
+    return kept.drop(columns=drop_cols).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +520,7 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
                       lithoname=None, strat1=None, strat2=None,
                       strat3=None, strat4=None,
                       dyke_field=None, dyke_codes=None,
-                      triangulator_class=None):
+                      triangulator_class=None, info=None):
     """
     Reduce a polygon GeoDataFrame to TN = ON*(OS/TS)^1.5 features.
 
@@ -489,9 +539,15 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
     def _or_none(v):
         return v if v else None
 
+    if info is None:
+        info = {}
     on = len(gdf)
     tn = topfer_count(on, ratio, x=3)
+    info['distance_threshold'] = distance_threshold
+    info['priority_fields'] = ', '.join(
+        c for c in [strat1, strat2, strat3, strat4, lithoname] if c) or 'none'
     if tn >= on:
+        info['note'] = 'target >= current count; all polygons kept'
         return gdf.copy()
 
     work = gdf.copy()
@@ -508,6 +564,8 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
             lithoname=lithoname,
         )
         work = trig.triangulate_polygons(target_ids=dyke_codes)
+        info['dyke_field'] = dyke_field
+        info['dyke_codes'] = ', '.join(str(c) for c in dyke_codes)
 
     merge_kwargs = dict(
         distance_threshold=distance_threshold,
@@ -531,6 +589,7 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
         areas = work.geometry.area.sort_values().values
         idx = min(n_remove, len(areas) - 1)
         threshold = float(areas[idx]) * (1.0 + 1e-9) + 1e-6
+        info['min_area_threshold'] = threshold
         try:
             sub = polygon_subsampler_class(work)
             merged = sub.clean_small_polygons_and_holes_new(
@@ -539,9 +598,12 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
                 work = merged
         except Exception as exc:
             print(f"T&P polygon bulk-merge error: {exc}")
+            info['note'] = f'bulk merge failed: {exc}'
+        info['count_after_area_merge'] = len(work)
 
     # Pass 2: count-controlled merge for any remainder — no holes, priorities respected
     if len(work) > tn:
+        info['count_merge_polygons'] = len(work) - tn
         work = _merge_to_count(work, tn, priority_cols=priority_cols)
 
     return work

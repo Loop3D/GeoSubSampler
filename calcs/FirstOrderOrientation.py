@@ -682,7 +682,8 @@ class SubsamplingEngine:
     # =========================================================================
 
     def firstorder(self, gpdataframe, contact_gdf,
-                   dist_buffer=500, angle_tol=15, path_out='outputs/'):
+                   dist_buffer=500, angle_tol=15, path_out='outputs/',
+                   max_points=None):
         """
         Filter measurements by proximity to stratigraphic contacts and angular
         alignment with them (first-order subsampling).
@@ -704,6 +705,12 @@ class SubsamplingEngine:
         angle_tol   : Maximum allowable strike angular difference (degrees).
                       Default: 15°.
         path_out    : Output directory path.
+        max_points  : Optional cap on the number of points returned. If more
+                      points pass both filters, the ``max_points`` best are
+                      kept, ranked by
+                      ``distance/dist_buffer + angle_diff/angle_tol``
+                      (lowest score = closest to a contact and best aligned
+                      with it). If fewer pass, all are returned.
 
         Returns
         -------
@@ -739,6 +746,7 @@ class SubsamplingEngine:
             contact_az     = joined['azimuth'].values
             bedding_strike = (joined[self.dipdir].astype(float).values - 90) % 180
             diff = np.abs(((contact_az - bedding_strike + 90) % 180) - 90)
+            ang_diff = pd.Series(diff, index=joined['index'].values)
             keep_orig_idx = joined.loc[diff <= angle_tol, 'index'].values
             df_sub = candidates.loc[keep_orig_idx].copy()
 
@@ -753,6 +761,7 @@ class SubsamplingEngine:
             bedding_strike = (candidates[self.dipdir].astype(float).values
                               - 90) % 180
             diff   = np.abs(((contact_az - bedding_strike + 90) % 180) - 90)
+            ang_diff = pd.Series(diff, index=candidates.index)
             df_sub = candidates[diff <= angle_tol].copy()
 
             # Write outputs
@@ -764,7 +773,15 @@ class SubsamplingEngine:
                         df_sub.to_file(os.path.join(path_out, fname + ".shp"),
                                     driver='ESRI Shapefile')
                         df_sub.to_csv(os.path.join(path_out, fname + ".csv"))
-            """        
+            """
+        # Optional cap: keep the best-ranked points (closest to a contact and
+        # best aligned with it), giving an exact count with no iteration.
+        self.last_firstorder_n_pass = len(df_sub)
+        if max_points is not None and len(df_sub) > max_points:
+            eps = 1e-12
+            score = (dists.loc[df_sub.index] / max(dist_buffer, eps)
+                     + ang_diff.loc[df_sub.index] / max(angle_tol, eps))
+            df_sub = df_sub.loc[score.nsmallest(int(max_points)).index]
         return df_sub
 
     # =========================================================================
@@ -856,7 +873,8 @@ class SubsamplingEngine:
                 contact_gdf=kwargs['contact_gdf'],
                 dist_buffer=kwargs.get('dist_buffer', 500),
                 angle_tol=kwargs.get('angle_tol', 15),
-                path_out=path_out)
+                path_out=path_out,
+                max_points=kwargs.get('max_points'))
 
 
 # =============================================================================
