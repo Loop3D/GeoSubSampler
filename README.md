@@ -152,7 +152,7 @@ Define the hierarchy for polygon merging decisions:
   - *Type*: Attribute field
   - *Description*: Used for lithological classification during polygon processing
 
-#### Dyke/Intrusion Handling
+#### Dyke/Intrusion/Alluvium Handling
 - **Ignore Field**: Field identifying polygons that are removed by triangulation then merging, not by merging
   - *Type*: Attribute field
 - **Ignore Codes**: Comma-separated list of codes identifying dykes/intrusions/alluvium that are best removed by triangulation, given their aspect ratio
