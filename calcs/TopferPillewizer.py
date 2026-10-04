@@ -309,6 +309,19 @@ def _find_offset_column(columns):
                  if 'strat' in c.lower() or 'offset' in c.lower()), None)
 
 
+def _find_cluster_column(columns):
+    """
+    Orientation-cluster label column written by the cluster tool ('cluster').
+    Prefer that exact name; 'cluster_ce' (cluster centre) and any user field that
+    merely contains 'cluster' are only used as a fallback.
+    """
+    if 'cluster' in columns:
+        return 'cluster'
+    return next((c for c in columns if 'cluster' in c.lower()
+                 and 'cent' not in c.lower() and not c.lower().endswith('_ce')), None) \
+        or next((c for c in columns if 'cluster' in c.lower()), None)
+
+
 def _offset_rank(series):
     """
     Numeric rank for sorting faults by offset level, highest = kept longest.
@@ -361,8 +374,7 @@ def scale_lines_tp(gdf, ratio, method, info=None):
                 pd.to_numeric(result[strat_col], errors='coerce') if strat_col
                 else pd.Series([''] * len(result), index=result.index))
         elif method == 'clusters':
-            cluster_col = next((c for c in result.columns
-                                if 'cluster' in c.lower()), None)
+            cluster_col = _find_cluster_column(result.columns)
             result['tp_sel_val'] = _to_str(result[cluster_col]) if cluster_col else ''
         else:  # length or graph-without-edge_type
             result['tp_sel_val'] = ('' if method == 'graph'
@@ -371,11 +383,15 @@ def scale_lines_tp(gdf, ratio, method, info=None):
 
     n_keep = min(tn, on)
     work = gdf.copy()
-    # Reuse existing line_len to avoid recomputing geometry lengths on every step
-    if 'line_len' in work.columns:
+    # Reuse an existing line_len, except for the graph method: its features are
+    # re-cut/merged graph edges, and a stored line_len copied from the original
+    # fault would give every piece of a split fault the whole fault's length.
+    if 'line_len' in work.columns and method != 'graph':
         work['_len'] = work['line_len']
     else:
         work['_len'] = work.geometry.length
+        if method == 'graph' and 'line_len' in work.columns:
+            work['line_len'] = work['_len']
 
     if method == 'graph' and 'edge_type' in work.columns:
         work['_rank'] = work['edge_type'].apply(_edge_type_rank)
@@ -408,9 +424,7 @@ def scale_lines_tp(gdf, ratio, method, info=None):
             info['criterion'] = 'length (no strat-offset field - fallback)'
 
     elif method == 'clusters':
-        cluster_col = next(
-            (c for c in work.columns if 'cluster' in c.lower()), None
-        )
+        cluster_col = _find_cluster_column(work.columns)
         if cluster_col:
             sizes = work[cluster_col].value_counts()
             work['_csz'] = work[cluster_col].map(sizes)
