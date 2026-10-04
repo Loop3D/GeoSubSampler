@@ -443,6 +443,43 @@ class GeoSubSampler:
             )
             return False
 
+    @staticmethod
+    def _parse_codes(text):
+        """Split a comma/newline separated code list, trimming whitespace and quotes."""
+        codes = []
+        for part in text.replace("\n", ",").replace(";", ",").split(","):
+            part = part.strip().strip("'\"").strip()
+            if part:
+                codes.append(part)
+        return codes
+
+    def _report_ignore_codes(self, triangulator, codes, gdf):
+        """Tell the user, at the top of the pane, what the ignore codes matched."""
+        s = getattr(triangulator, 'last_summary', None)
+        if s is None:
+            return
+        if s['codes_not_found']:
+            available = sorted(set(str(v) for v in gdf[triangulator.id_column].unique()))
+            shown = ", ".join(available[:15]) + (" ..." if len(available) > 15 else "")
+            self._warn(
+                f"Ignore codes not found in field '{triangulator.id_column}': "
+                f"{', '.join(s['codes_not_found'])}. Values present: {shown}")
+        if s.get('failed'):
+            self._warn(
+                f"Ignore codes: {s['failed']} polygon(s) could not be triangulated and were "
+                f"left unchanged (see console).")
+        if s['matched'] and not s['triangulated'] and not s.get('failed'):
+            self._warn(
+                f"Ignore codes matched {s['matched']} polygon(s), but none is smaller than "
+                f"the area threshold ({s['threshold']:.4g} map units²), so none was "
+                f"triangulated. Only polygons below the threshold are triangulated.",
+                duration=15)
+        elif s['triangulated']:
+            self.iface.messageBar().pushMessage(
+                f"Ignore codes: {s['triangulated']} of {s['matched']} matching polygon(s) "
+                f"triangulated ({s['above_threshold']} above the area threshold left as is).",
+                level=Qgis.Info, duration=8)
+
     def _warn(self, message, level=Qgis.Warning, duration=15):
         """Print to the console and show the message at the top of the QGIS pane."""
         print(message)
@@ -979,10 +1016,8 @@ class GeoSubSampler:
         strat4    = self.dockwidget.mFieldComboBox_priority_4.currentText()
         lithoname = self.dockwidget.mFieldComboBox_priority_5.currentText()
         dyke_field = self.dockwidget.mFieldComboBox_dyke.currentText()
-        dyke_codes = (
-            self.dockwidget.plainTextEdit_dyke_Codes.toPlainText()
-            .replace(" ", "").split(",")
-        )
+        dyke_codes = self._parse_codes(
+            self.dockwidget.plainTextEdit_dyke_Codes.toPlainText())
         try:
             dist_thresh = float(self.dockwidget.lineEdit_node_tolerance.text())
         except ValueError:
@@ -1336,11 +1371,8 @@ class GeoSubSampler:
                 strat2 = self.dockwidget.mFieldComboBox_priority_2.currentText()
                 strat3 = self.dockwidget.mFieldComboBox_priority_3.currentText()
                 strat4 = self.dockwidget.mFieldComboBox_priority_4.currentText()
-                dyke_codes = (
-                    self.dockwidget.plainTextEdit_dyke_Codes.toPlainText()
-                    .replace(" ", "")
-                    .split(",")
-                )
+                dyke_codes = self._parse_codes(
+                    self.dockwidget.plainTextEdit_dyke_Codes.toPlainText())
                 dyke_field = self.dockwidget.mFieldComboBox_dyke.currentText()
                 dyke_index = self.dockwidget.mFieldComboBox_dyke.currentIndex()
                 lithoname  = self._resolved_field(self.polygon_layer, lithoname)
@@ -1394,7 +1426,10 @@ class GeoSubSampler:
                         gdf = gpd.read_file(self._resolved_source(self.polygon_layer))
 
                     # Handle dykes special case
-                    if dyke_index != 0:
+                    if dyke_index != 0 and not dyke_codes:
+                        self._warn("Ignore field is set but the Ignore Codes box is empty - "
+                                   "no polygons will be triangulated.")
+                    if dyke_index != 0 and dyke_codes:
                         triangulator = PolygonTriangulator(
                             gdf=gdf,
                             id_column=dyke_field,
@@ -1407,6 +1442,7 @@ class GeoSubSampler:
                             lithoname=lithoname,
                         )
                         gdf = triangulator.triangulate_polygons(target_ids=dyke_codes)
+                        self._report_ignore_codes(triangulator, dyke_codes, gdf)
 
                     # Create an instance of StructuralPolygonSubSampler
                     polygonSubsampler = StructuralPolygonSubSampler(gdf)

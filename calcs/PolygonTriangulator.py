@@ -84,28 +84,52 @@ class PolygonTriangulator:
         
         all_records = []
         tri_id = 0
-        
+
         # First, process triangulated polygons
         triangulated_indices = set()
-        
+
+        # Summary for the caller (shown in the QGIS message bar)
+        self.last_summary = {
+            'codes_not_found': [],
+            'matched': 0,
+            'triangulated': 0,
+            'above_threshold': 0,
+            'threshold': self.min_area_threshold,
+        }
+        id_norm = self.gdf[self.id_column].astype(str).str.strip().str.lower()
+
         for target_id in target_ids:
-            # Find polygons with this ID
-            target_mask = self.gdf[self.id_column] == target_id
+            # Find polygons with this ID (case- and whitespace-insensitive)
+            target_mask = id_norm == target_id.strip().lower()
             target_polygons = self.gdf[target_mask]
-            
+
             if len(target_polygons) == 0:
                 print(f"Warning: No polygons found with ID {target_id}")
+                self.last_summary['codes_not_found'].append(target_id)
                 continue
-            
+
             print(f"Processing {len(target_polygons)} polygon(s) with ID {target_id}")
-            
+            self.last_summary['matched'] += len(target_polygons)
+
             # Triangulate each polygon with this ID
             for idx, row in target_polygons.iterrows():
+                if row.geometry.area >= self.min_area_threshold:
+                    self.last_summary['above_threshold'] += 1
                 if( row.geometry.area < self.min_area_threshold):
-                    triangulated_indices.add(idx)  # Track which polygons were triangulated
                     polygon = row.geometry
                     triangles = self._triangulate_single_polygon(polygon)
-                    
+
+                    if not triangles:
+                        # Never remove a polygon we could not replace: keep the original
+                        print(f"  Warning: triangulation produced no triangles for index {idx}; "
+                              f"polygon kept unchanged")
+                        self.last_summary.setdefault('failed', 0)
+                        self.last_summary['failed'] += 1
+                        continue
+
+                    self.last_summary['triangulated'] += 1
+                    triangulated_indices.add(idx)  # Track which polygons were triangulated
+
                     print(f"  Created {len(triangles)} triangles from polygon at index {idx}")
                     
                     # Create triangle records
@@ -195,52 +219,70 @@ class PolygonTriangulator:
         """
         Triangulate a single polygon using Delaunay triangulation with hole awareness.
         """
-        try:
-            # Extract coordinates
-            if isinstance(polygon, Polygon):
-                # Check for holes
-                if len(polygon.interiors) > 0:
-                    print(f"    Polygon has {len(polygon.interiors)} interior holes - using hole-aware triangulation")
-                    return self._triangulate_polygon_with_holes(polygon)
-                else:
-                    coords = list(polygon.exterior.coords)[:-1]  # Remove duplicate last point
-            elif isinstance(polygon, MultiPolygon):
-                # Use largest part for MultiPolygon
-                largest_poly = max(polygon.geoms, key=lambda p: p.area)
-                if len(largest_poly.interiors) > 0:
-                    print(f"    MultiPolygon largest part has {len(largest_poly.interiors)} holes - using hole-aware triangulation")
-                    return self._triangulate_polygon_with_holes(largest_poly)
-                else:
-                    coords = list(largest_poly.exterior.coords)[:-1]
-            else:
-                print(f"Unsupported geometry type: {polygon.geom_type}")
-                return []
-            
-            if len(coords) < 3:
-                print("Polygon has too few points for triangulation")
-                return []
-            
-            # Convert to numpy array
-            points = np.array(coords)
-            
-            # Create Delaunay triangulation
-            tri = Delaunay(points)
-            
-            # Create triangle polygons
-            triangles = []
-            for simplex in tri.simplices:
-                triangle_coords = points[simplex]
-                triangle_poly = Polygon(triangle_coords)
-                
-                # Check if triangle is inside original polygon
-                if self._triangle_inside_polygon(triangle_poly, polygon):
-                    triangles.append(triangle_poly)
-            
-            return triangles
-            
-        except Exception as e:
-            print(f"Error triangulating polygon: {e}")
+        if isinstance(polygon, Polygon):
+            parts = [polygon]
+        elif isinstance(polygon, MultiPolygon):
+            # Triangulate EVERY part, not just the largest, so no area is lost
+            parts = list(polygon.geoms)
+        else:
+            print(f"Unsupported geometry type: {polygon.geom_type}")
             return []
+
+        triangles = []
+        for part in parts:
+            try:
+                triangles.extend(self._triangulate_part(part))
+            except Exception as e:
+                print(f"Error triangulating polygon part: {e}")
+        return triangles
+
+    @staticmethod
+    def _polygon_parts(geom):
+        """Return the Polygon pieces of any geometry (drops lines and points)."""
+        if geom is None or geom.is_empty:
+            return []
+        if geom.geom_type == 'Polygon':
+            return [geom]
+        if geom.geom_type in ('MultiPolygon', 'GeometryCollection'):
+            parts = []
+            for g in geom.geoms:
+                parts.extend(PolygonTriangulator._polygon_parts(g))
+            return parts
+        return []
+
+    def _clip_to_polygon(self, triangles, polygon):
+        """
+        Clip triangles to the polygon so they tile it exactly.
+
+        An unconstrained Delaunay triangulation of the boundary vertices tiles
+        the convex hull, and for a concave polygon some triangles straddle the
+        boundary. Keeping or dropping whole triangles then leaves gaps inside
+        the polygon and spills area into neighbouring polygons.
+        """
+        clipped = []
+        for tri in triangles:
+            if not tri.is_valid or tri.area <= 0:
+                continue
+            for piece in self._polygon_parts(tri.intersection(polygon)):
+                if piece.area > 1e-10:
+                    clipped.append(piece)
+        return clipped
+
+    def _triangulate_part(self, polygon):
+        """Triangulate one Polygon (with or without holes) into pieces that tile it exactly."""
+        if len(polygon.interiors) > 0:
+            print(f"    Polygon has {len(polygon.interiors)} interior holes - using hole-aware triangulation")
+            return self._triangulate_polygon_with_holes(polygon)
+
+        coords = list(polygon.exterior.coords)[:-1]  # Remove duplicate last point
+        if len(coords) < 3:
+            print("Polygon has too few points for triangulation")
+            return []
+
+        points = np.array(coords)
+        tri = Delaunay(points)
+        raw = [Polygon(points[simplex]) for simplex in tri.simplices]
+        return self._clip_to_polygon(raw, polygon)
     
     def _triangulate_polygon_with_holes(self, polygon):
         """
@@ -349,41 +391,13 @@ class PolygonTriangulator:
         coords = list(polygon.exterior.coords)[:-1]
         points = np.array(coords)
         
-        # Create Delaunay triangulation of exterior
+        # Create Delaunay triangulation of exterior, then clip every triangle to
+        # the polygon (holes included) so the pieces tile it exactly.
         tri = Delaunay(points)
-        
-        triangles = []
-        for simplex in tri.simplices:
-            triangle_coords = points[simplex]
-            triangle_poly = Polygon(triangle_coords)
-            triangle_centroid = triangle_poly.centroid
-            
-            # Check if triangle is in the polygon exterior
-            if polygon.contains(triangle_centroid):
-                # Additional check: ensure triangle doesn't overlap significantly with holes
-                valid_triangle = True
-                
-                for hole in polygon.interiors:
-                    hole_poly = Polygon(hole)
-                    
-                    # Check if triangle centroid is in hole
-                    if hole_poly.contains(triangle_centroid):
-                        valid_triangle = False
-                        break
-                    
-                    # Check for significant overlap with hole
-                    try:
-                        overlap = triangle_poly.intersection(hole_poly)
-                        if hasattr(overlap, 'area') and overlap.area > triangle_poly.area * 0.1:
-                            valid_triangle = False
-                            break
-                    except:
-                        pass
-                
-                if valid_triangle:
-                    triangles.append(triangle_poly)
-        
-        print(f"    Fallback method created {len(triangles)} triangles (filtered for holes)")
+        raw = [Polygon(points[simplex]) for simplex in tri.simplices]
+        triangles = self._clip_to_polygon(raw, polygon)
+
+        print(f"    Fallback method created {len(triangles)} triangles (clipped to polygon and holes)")
         return triangles
     
     def _triangle_inside_polygon(self, triangle, polygon):
