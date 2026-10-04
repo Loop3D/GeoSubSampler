@@ -1140,9 +1140,6 @@ class SimplificationEngine:
             end_tri.prevTriangle   = start_tri
 
         unconstrained = [t for t in triangle_array if not t.is_constrained]
-        print(f"    Line: {len(coords)} vertices, {len(constraint_indices)} constrained "
-              f"(refined), {len(unconstrained)} removable")
-
         if not unconstrained:
             return line
 
@@ -1153,16 +1150,11 @@ class SimplificationEngine:
             heapq.heapify(unconstrained)
             min_area = unconstrained[0].calcArea()
             if not math.isfinite(min_area) or min_area >= threshold:
-                if min_area >= threshold:
-                    print(f"    Cannot simplify further at threshold {threshold}: "
-                          f"minimum remaining area = {unconstrained[0].calcArea():.4f}")
                 break
             t = heapq.heappop(unconstrained)
             t.prevTriangle.nextTriangle = t.nextTriangle
             t.nextTriangle.prevTriangle = t.prevTriangle
             removed += 1
-
-        print(f"    Removed {removed} vertices, threshold: {threshold}")
 
         simplified = [start_tri.point]
         node = start_tri.nextTriangle
@@ -1217,9 +1209,6 @@ class SimplificationEngine:
         unconstrained   = [t for t in triangle_ring if not t.is_constrained]
         constrained_cnt = sum(1 for t in triangle_ring if t.is_constrained)
 
-        print(f"    Ring: {len(coords)} vertices, {len(constraint_indices)} constrained "
-              f"(refined), {len(unconstrained)} removable")
-
         if not unconstrained:
             return ring
 
@@ -1232,9 +1221,6 @@ class SimplificationEngine:
                 break
             min_area = unconstrained[0].calcArea()
             if not math.isfinite(min_area) or min_area >= threshold:
-                if min_area >= threshold:
-                    print(f"    Ring: cannot simplify further at threshold {threshold}: "
-                          f"minimum remaining area = {unconstrained[0].calcArea():.4f}")
                 break
             t = heapq.heappop(unconstrained)
             prev = t.prevTriangle
@@ -1280,8 +1266,6 @@ class SimplificationEngine:
                     triangle_ring.pop(i)
                     break
             removed += 1
-
-        print(f"    Ring removed {removed} vertices, threshold: {threshold}")
 
         if len(triangle_ring) < 3:
             return None
@@ -1527,8 +1511,17 @@ class SimplificationEngine:
     def _simplify_multilinestring(self, mline, method, threshold, **kwargs):
         simp = [self._simplify_linestring(l, method, threshold, **kwargs)
                 for l in mline.geoms]
-        simp = [s for s in simp if s and not s.is_empty]
-        return MultiLineString(simp) if simp else None
+        # Each part may itself come back as a MultiLineString (arcs cut at
+        # junctions); flatten so MultiLineString receives only LineStrings.
+        flat = []
+        for s in simp:
+            if not s or s.is_empty:
+                continue
+            if s.geom_type == 'MultiLineString':
+                flat.extend(g for g in s.geoms if not g.is_empty)
+            else:
+                flat.append(s)
+        return MultiLineString(flat) if flat else None
 
     def _simplify_polygon(self, polygon, method, threshold, **kwargs):
         if method in ('decimation', 'douglas_peucker', 'douglas_peucker_tp', 'bend_simplify',
@@ -2320,8 +2313,20 @@ def preprocess_topology(
         for feat in features:
             g = feat['geom']
             if g is None or g.is_empty:
+                if verbose:
+                    print(f"  Warning: feature fid={feat['fid']} is empty after "
+                          f"overlap/gap correction — not written")
                 continue
             try:
+                # make_valid()/difference() can return a GeometryCollection,
+                # which the shapefile writer rejects; keep only polygon parts.
+                if g.geom_type == 'GeometryCollection':
+                    _parts = [p for p in g.geoms
+                              if p.geom_type in ('Polygon', 'MultiPolygon')
+                              and not p.is_empty]
+                    if not _parts:
+                        continue
+                    g = unary_union(_parts)
                 if has_multi and g.geom_type == 'Polygon':
                     g = MultiPolygon([g])
                 dst.write({'geometry': mapping(g), 'properties': feat['props']})
@@ -2818,6 +2823,7 @@ def vector_simplify_file_two_stage(
             collapsed_orig = 0   # collapsed + clip empty; original written (overlap unavoidable)
 
             for record in _ordered_records:
+                    geom = None
                     try:
                         gd   = record['geometry']
                         if gd['type'] == 'Polygon':
@@ -3111,9 +3117,22 @@ def vector_simplify_file_two_stage(
                             print(f"  Processed {processed} polygon features...")
 
                     except Exception as e:
-                        print(f"Error on polygon feature {processed}: {e}")
+                        _uid_e = (record['properties'].get(unit_field, f"fid={processed+1}")
+                                  if unit_field else f"fid={processed+1}")
+                        print(f"Error on polygon feature {processed} ('{_uid_e}'): {e}")
                         errors += 1
-                        simplified_geoms.append(None)
+                        # Never drop a feature silently: write the original geometry
+                        if geom is not None and not geom.is_empty:
+                            try:
+                                dst.write({'geometry': mapping(geom),
+                                           'properties': record['properties']})
+                                simplified_geoms.append(geom)
+                                print(f"  → original geometry written for '{_uid_e}'")
+                            except Exception as e2:
+                                print(f"  → could not write original either: {e2}")
+                                simplified_geoms.append(None)
+                        else:
+                            simplified_geoms.append(None)
 
         success_rate = (simplified / processed * 100) if processed else 0.0
 
