@@ -14,10 +14,12 @@ GeoSubSampler is designed to help geologists and GIS professionals manage large 
 
 ## Installation
 
-1. Download the plugin files (Use QT6 branch for QGIS 4.xx)
-2. Place them in your QGIS plugins directory
-3. Enable the plugin through QGIS Plugin Manager
-4. The plugin will appear as a dockable widget in QGIS
+1. Install the [QPIP](https://plugins.qgis.org/plugins/a00_qpip/) plugin through QGIS Plugin Manager
+2. Download the plugin files (Use QT6 branch for QGIS 4.xx)
+3. Place them in your QGIS plugins directory
+4. Restart QGIS. QPIP will offer to install any missing Python packages listed in `requirements.txt`
+5. Enable the plugin through QGIS Plugin Manager
+6. The plugin will appear as a dockable widget in QGIS
 
 ## Features
 
@@ -210,10 +212,18 @@ The plugin includes validation for:
 ## Dependencies
 
 - QGIS Python API (PyQt, qgis.core)
-- GeoPandas
+- Shapely (2.0 or later; its STRtree is used for polyline merging)
 - NumPy
-- Random and time modules for statistical operations
-- rtree for polyline merging
+- pandas
+- GeoPandas
+- Fiona
+- SciPy
+- Matplotlib
+- scikit-learn
+- NetworkX
+- triangle (only needed for polygon triangulation)
+
+These are listed in `requirements.txt` and are installed automatically by [QPIP](https://plugins.qgis.org/plugins/a00_qpip/). Most of them ship with QGIS; scikit-learn, NetworkX and triangle usually need to be installed.
 
 ## License
 

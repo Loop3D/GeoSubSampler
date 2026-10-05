@@ -1,1 +1,10 @@
+shapely>=2.0
+numpy
+pandas
+geopandas
 fiona
+scipy
+matplotlib
+scikit-learn
+networkx
+triangle
