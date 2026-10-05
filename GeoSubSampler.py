@@ -305,12 +305,17 @@ class GeoSubSampler:
         path_part = source.split('|')[0]
 
         if path_part.lower().endswith('.shp'):
-            return path_part
+            if not os.path.exists(path_part) or self._dir_writable(os.path.dirname(path_part)):
+                return path_part
+            # Read-only folder: tools write results beside the source, so work on a copy
+            return self._copy_to_writable(path_part)
 
         if not os.path.exists(path_part):
             return source
 
         out_dir = os.path.dirname(path_part)
+        if not self._dir_writable(out_dir):
+            out_dir = self._fallback_dir()
         base = os.path.splitext(os.path.basename(path_part))[0]
         safe_name = re.sub(r'[^A-Za-z0-9_]+', '_', layer.name()).strip('_')
         out_path = os.path.join(out_dir, f"{base}_{safe_name}.shp")
@@ -520,20 +525,122 @@ class GeoSubSampler:
             pass
         QgsProject.instance().addMapLayer(new_layer)
 
+    @staticmethod
+    def _safe_filename(text, max_len=80):
+        """
+        Make a layer name safe to use inside a file name. Characters that are
+        illegal in Windows file names (\\ / : * ? " < > |) and control characters
+        make the write fail even in a writable folder, e.g. a layer called
+        "Structure: 2024" or "points/clean".
+        """
+        cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', '_', str(text))
+        cleaned = cleaned.strip(' .')
+        return cleaned[:max_len] or 'layer'
+
+    def _output_directory(self, qgis_layer):
+        """
+        Folder for results: next to the layer's file when that exists and can be
+        written to, otherwise the project folder, otherwise the temp folder.
+        Memory/temporary layers and web sources have no usable folder.
+        """
+        resolved = self._resolved_source(qgis_layer)
+        folder = os.path.dirname(resolved.split('|')[0])
+        return folder if self._dir_writable(folder) else self._fallback_dir()
+
+    def _dir_writable(self, folder):
+        """True if a file can really be created in `folder` (os.access is unreliable on Windows)."""
+        if not folder or not os.path.isdir(folder):
+            return False
+        cache = self.__dict__.setdefault('_writable_cache', {})
+        if folder not in cache:
+            try:
+                with tempfile.NamedTemporaryFile(dir=folder):
+                    pass
+                cache[folder] = True
+            except OSError:
+                cache[folder] = False
+        return cache[folder]
+
+    def _fallback_dir(self):
+        """Project folder if writable, otherwise the temp folder."""
+        for folder in (QgsProject.instance().homePath(), tempfile.gettempdir()):
+            if self._dir_writable(folder):
+                return folder
+        return tempfile.gettempdir()
+
+    def _copy_to_writable(self, shp_path):
+        """
+        A shapefile in a read-only folder can be read but nothing can be written
+        beside it, and several tools write their results next to the source. Copy
+        the shapefile (all sidecar files) to a writable folder, once, and use that.
+        """
+        copies = self.__dict__.setdefault('_writable_copies', {})
+        if shp_path in copies and os.path.exists(copies[shp_path]):
+            return copies[shp_path]
+        base = os.path.splitext(shp_path)[0]
+        stem = self._safe_filename(os.path.basename(base))
+        dest_base = os.path.join(self._fallback_dir(), stem)
+        try:
+            for ext in ('.shp', '.shx', '.dbf', '.prj', '.cpg', '.qpj', '.sbn', '.sbx'):
+                if os.path.exists(base + ext):
+                    shutil.copyfile(base + ext, dest_base + ext)
+        except OSError as exc:
+            self._warn(f"'{os.path.dirname(shp_path)}' is not writable and a working "
+                       f"copy could not be made: {exc}", level=Qgis.Critical)
+            return shp_path
+        copies[shp_path] = dest_base + '.shp'
+        self._warn(f"'{os.path.dirname(shp_path)}' is not writable, so a working copy "
+                   f"was made in {os.path.dirname(dest_base)} and results will be saved there.",
+                   level=Qgis.Info, duration=10)
+        return copies[shp_path]
+
+    def _make_output_path(self, qgis_layer, suffix):
+        """
+        A unique, safe .shp path for a result derived from `qgis_layer`:
+        <folder>/<layer name><suffix>.shp, with a random number added if that
+        file already exists.
+        """
+        base = os.path.join(self._output_directory(qgis_layer),
+                            self._safe_filename(qgis_layer.name()) + self._safe_filename(suffix))
+        path = base + ".shp"
+        if os.path.exists(path):
+            path = f"{base}_{random.randint(10000, 99999)}.shp"
+        return path
+
+    def _save_gdf(self, gdf, path):
+        """
+        Save a GeoDataFrame as a shapefile and return the path actually used.
+        On failure, report the real reason and the path, retry in the temp folder,
+        and only then raise (with the path in the message).
+        """
+        try:
+            gdf.to_file(path, driver="ESRI Shapefile")
+            return path
+        except Exception as exc:
+            self._warn(f"Could not save {path}: {exc}. Trying the temp folder instead.")
+        alt = os.path.join(tempfile.gettempdir(), os.path.basename(path))
+        try:
+            gdf.to_file(alt, driver="ESRI Shapefile")
+        except Exception as exc2:
+            raise RuntimeError(f"could not save the result to {alt}: {exc2}") from exc2
+        self._warn(f"Result saved to {alt} instead.", level=Qgis.Info)
+        return alt
+
     def finalisePointSampler(self, gdf2, qgis_layer, name, param=0):
-        layer_path = os.path.dirname(self._resolved_source(qgis_layer))
+        layer_path = self._output_directory(qgis_layer)
         if(param==0):
             param2 = ''
 
         else:
             param2="_"+ str(int(param))
 
+        stem = self._safe_filename(qgis_layer.name())
         new_path = (
             layer_path
             + "/"
-            + qgis_layer.name()
+            + stem
             + "_"
-            + name
+            + self._safe_filename(name)
             + param2
             + ".shp"
         )
@@ -543,9 +650,9 @@ class GeoSubSampler:
             new_path = (
                 layer_path
                 + "/"
-                + qgis_layer.name()
+                + stem
                 + "_"
-                + name
+                + self._safe_filename(name)
                 + param2
                 + "_"
                 + str(random_5_digit_integer)
@@ -582,7 +689,7 @@ class GeoSubSampler:
                 duration=15,
             )
         else:
-            gdf2.to_file(new_path, driver="ESRI Shapefile")
+            new_path = self._save_gdf(gdf2, new_path)
 
         # reload as layer
         upscaled_layer = QgsVectorLayer(
@@ -1129,24 +1236,13 @@ class GeoSubSampler:
             ln_full = scale_lines_tp(current_fault_gdf, 1.0, fault_method)
             add_report('baseline', 1.0, 1.0, 'faults', fault_method,
                        len(current_fault_gdf), len(ln_full), {})
-            layer_path = os.path.dirname(self._resolved_source(fault_layer))
-            out_name = f"{fault_layer.name()}_tp_1.shp"
-            out_path = os.path.join(layer_path, out_name)
-            if os.path.exists(out_path):
-                out_path = out_path.replace(
-                    '.shp', f"_{random.randint(10000,99999)}.shp")
-            ln_full.to_file(out_path, driver='ESRI Shapefile')
+            out_path = self._save_gdf(ln_full, self._make_output_path(fault_layer, "_tp_1"))
             ln_layer = QgsVectorLayer(out_path, f"{fault_layer.name()}_tp_1", "ogr")
             self._add_layer_with_style(ln_layer, fault_layer)
 
         if current_polygon_gdf is not None:
-            layer_path = os.path.dirname(self._resolved_source(polygon_layer))
-            out_name = f"{polygon_layer.name()}_tp_1.shp"
-            out_path = os.path.join(layer_path, out_name)
-            if os.path.exists(out_path):
-                out_path = out_path.replace(
-                    '.shp', f"_{random.randint(10000,99999)}.shp")
-            current_polygon_gdf.to_file(out_path, driver='ESRI Shapefile')
+            out_path = self._save_gdf(current_polygon_gdf,
+                                      self._make_output_path(polygon_layer, "_tp_1"))
             poly_layer = QgsVectorLayer(out_path, f"{polygon_layer.name()}_tp_1", "ogr")
             self._add_layer_with_style(poly_layer, polygon_layer)
             add_report('baseline', 1.0, 1.0, 'polygons', 'none (all kept)',
@@ -1204,13 +1300,8 @@ class GeoSubSampler:
                 add_report(f"ratio {ratio_tag}", iter_ratio, step_ratio, 'faults',
                            fault_method, n_ln_in, len(ln_scaled), ln_info)
                 current_fault_gdf = ln_scaled
-                layer_path = os.path.dirname(self._resolved_source(fault_layer))
-                out_name   = f"{fault_layer.name()}_tp_{ratio_tag}.shp"
-                out_path   = os.path.join(layer_path, out_name)
-                if os.path.exists(out_path):
-                    out_path = out_path.replace(
-                        '.shp', f"_{random.randint(10000,99999)}.shp")
-                ln_scaled.to_file(out_path, driver='ESRI Shapefile')
+                out_path = self._save_gdf(
+                    ln_scaled, self._make_output_path(fault_layer, f"_tp_{ratio_tag}"))
                 ln_layer = QgsVectorLayer(
                     out_path,
                     f"{fault_layer.name()}_tp_{ratio_tag}", "ogr")
@@ -1246,13 +1337,8 @@ class GeoSubSampler:
                            'merge smallest into best-matching neighbour',
                            n_poly_in, len(poly_scaled), poly_info)
 
-                layer_path = os.path.dirname(self._resolved_source(polygon_layer))
-                out_name   = f"{polygon_layer.name()}_tp_{ratio_tag}.shp"
-                out_path   = os.path.join(layer_path, out_name)
-                if os.path.exists(out_path):
-                    out_path = out_path.replace(
-                        '.shp', f"_{random.randint(10000,99999)}.shp")
-                poly_scaled.to_file(out_path, driver='ESRI Shapefile')
+                out_path = self._save_gdf(
+                    poly_scaled, self._make_output_path(polygon_layer, f"_tp_{ratio_tag}"))
                 poly_layer = QgsVectorLayer(
                     out_path,
                     f"{polygon_layer.name()}_tp_{ratio_tag}", "ogr")
@@ -1399,27 +1485,8 @@ class GeoSubSampler:
                         min_area_threshold = min_area_threshold / (110000 * 110000)
                         distance_threshold = distance_threshold / 110000
 
-                    layer_path = os.path.dirname(self._resolved_source(self.polygon_layer))
-                    new_path = (
-                        layer_path
-                        + "/"
-                        + self.polygon_layer.name()
-                        + "_min_area_"
-                        + parameter
-                        + ".shp"
-                    )
-                    if os.path.exists(new_path):
-                        random_5_digit_integer = random.randint(10000, 99999)
-                        new_path = (
-                            layer_path
-                            + "/"
-                            + self.polygon_layer.name()
-                            + "_min_area_"
-                            + parameter
-                            + "_"
-                            + str(random_5_digit_integer)
-                            + ".shp"
-                        )
+                    new_path = self._make_output_path(
+                        self.polygon_layer, "_min_area_" + parameter)
 
                     # Convert QGIS layer to GeoPandas if first in series
                     if upScale == minScale:
@@ -1457,7 +1524,7 @@ class GeoSubSampler:
                         strat4=strat4,
                         lithoname=lithoname,
                     )
-                    output_gdf.to_file(new_path, driver="ESRI Shapefile")
+                    new_path = self._save_gdf(output_gdf, new_path)
 
                     # reload as layer
                     upscaled_layer = QgsVectorLayer(
@@ -1490,22 +1557,11 @@ class GeoSubSampler:
                 min_join_angle=min_join_angle,  # Minimum 150° angle at join point (rejects angles < 150°)
             )
 
-            layer_path = os.path.dirname(self._resolved_source(self.polyline_layer))
-            new_path = layer_path + "/" + self.polyline_layer.name() + "_merged.shp"
-            if os.path.exists(new_path):
-                random_5_digit_integer = random.randint(10000, 99999)
-                new_path = (
-                    layer_path
-                    + "/"
-                    + self.polyline_layer.name()
-                    + "_merged_"
-                    + str(random_5_digit_integer)
-                    + ".shp"
-                )
+            new_path = self._make_output_path(self.polyline_layer, "_merged")
 
             gdf = gpd.read_file(self._resolved_source(self.polyline_layer))
             output_gdf = merger.process_shapefile(gdf)
-            output_gdf.to_file(new_path, driver="ESRI Shapefile")
+            new_path = self._save_gdf(output_gdf, new_path)
 
             # reload as layer
             upscaled_layer = QgsVectorLayer(
@@ -1653,9 +1709,10 @@ class GeoSubSampler:
                 self._resolved_source(self.polyline_layer), outPath, azimuth_field="endpt_az"
             )
 
+            safe_layer_name = self._safe_filename(self.polyline_layer.name())
             best_n = filter_obj.example_manual_clusters(
                 outPath,
-                self.dockwidget.mMapLayerComboBox_fault_polylines.currentText(),
+                safe_layer_name,
                 azimuth_field="endpt_az",
             )
             if best_n is None:
@@ -1665,13 +1722,9 @@ class GeoSubSampler:
                     duration=15,
                 )
                 return
-            layer_path = os.path.dirname(self._resolved_source(self.polyline_layer))
-            new_path = (
-                layer_path
-                + "/"
-                + self.polyline_layer.name()
-                + f"_fault_clusters_{best_n}.shp"
-            )
+            # the clustering step writes beside outPath, using the same safe name
+            new_path = os.path.join(
+                os.path.dirname(outPath), safe_layer_name + f"_fault_clusters_{best_n}.shp")
 
             upscaled_layer = QgsVectorLayer(
                 new_path,
