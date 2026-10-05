@@ -7,7 +7,7 @@ name=GeoSubSampler
 qgisMinimumVersion=3.24
 qgisMaximumVersion=4.99
 description=Subsamples geological orientations, faults and polygons
-version=0.1
+version=0.2
 author=Ranee Joshi, Mark Jessell
 email=raneejoshi@gmail.com
 
