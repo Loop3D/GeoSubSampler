@@ -12,7 +12,7 @@ GeoSubSampler is designed to help geologists and GIS professionals manage large 
 
 ![GeoSubSampler image](GUI.png)
 
-## Installation
+## Installation (QGIS)
 
 1. Install the [QPIP](https://plugins.qgis.org/plugins/a00_qpip/) plugin through QGIS Plugin Manager
 2. Download the plugin files (Use QT6 branch for QGIS 4.xx)
