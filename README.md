@@ -21,6 +21,19 @@ GeoSubSampler is designed to help geologists and GIS professionals manage large 
 5. Enable the plugin through QGIS Plugin Manager
 6. The plugin will appear as a dockable widget in QGIS
 
+## ArcGIS Pro version (v0.3)
+
+An ArcGIS Pro equivalent of the plugin is in the [ARCGIS](ARCGIS/) folder. It is a Python toolbox
+(`ARCGIS/GeoSubSampler.pyt`) whose **Launch GeoSubSampler GUI** tool opens a Tkinter window with the same
+groups and settings as the QGIS dock widget (orientation subsampling, fault processing, geology polygons and
+Töpfer & Pillewizer scaling), using the same `calcs` code. The window lists the point, line and polygon
+layers in your project, and results are added to the map automatically with the symbology of the layer they
+were made from.
+
+The ArcGIS Pro Python environment needs `geopandas` (not included by default) and, if not already installed,
+`scikit-learn`, `networkx`, `scipy`, `matplotlib` and `fiona`. See [ARCGIS/README.md](ARCGIS/README.md) for
+installation and usage notes.
+
 ## Features
 
 ### 1. Structural Orientation Subsampling
