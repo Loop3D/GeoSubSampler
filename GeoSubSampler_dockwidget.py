@@ -4,14 +4,12 @@ GeoSubSamplerDockWidget — pure-Python UI (no .ui file required).
 """
 
 from qgis.PyQt import QtWidgets
-from qgis.PyQt.QtCore import pyqtSignal, Qt
+from qgis.PyQt.QtCore import pyqtSignal
 from qgis.gui import QgsMapLayerComboBox, QgsFieldComboBox, QgsDoubleSpinBox
-from qgis.core import QgsFieldProxyModel
+from .qt_compat import (ALIGN_RIGHT, ALIGN_LEFT, ALIGN_VCENTER, ALIGN_CENTER, SCROLLBAR_ALWAYS_ON,
+                        FRAME_HLINE, FRAME_SUNKEN, FIELD_NUMERIC)
 
-try:
-    _SB_ALWAYS = Qt.ScrollBarPolicy.ScrollBarAlwaysOn
-except AttributeError:
-    _SB_ALWAYS = Qt.ScrollBarAlwaysOn
+_SB_ALWAYS = SCROLLBAR_ALWAYS_ON
 
 
 class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
@@ -28,7 +26,7 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _lbl(text, align=Qt.AlignRight | Qt.AlignVCenter):
+    def _lbl(text, align=ALIGN_RIGHT | ALIGN_VCENTER):
         w = QtWidgets.QLabel(text)
         w.setAlignment(align)
         return w
@@ -36,8 +34,8 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
     @staticmethod
     def _hline():
         line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.HLine)
-        line.setFrameShadow(QtWidgets.QFrame.Sunken)
+        line.setFrameShape(FRAME_HLINE)
+        line.setFrameShadow(FRAME_SUNKEN)
         return line
 
     # ------------------------------------------------------------------
@@ -97,8 +95,8 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         # Dip / Dip Dir / convention row
         self.mFieldComboBox_dip     = QgsFieldComboBox()
         self.mFieldComboBox_dip_dir = QgsFieldComboBox()
-        self.mFieldComboBox_dip.setFilters(QgsFieldProxyModel.Numeric)
-        self.mFieldComboBox_dip_dir.setFilters(QgsFieldProxyModel.Numeric)
+        self.mFieldComboBox_dip.setFilters(FIELD_NUMERIC)
+        self.mFieldComboBox_dip_dir.setFilters(FIELD_NUMERIC)
         self.checkBox_dip_dir = QtWidgets.QCheckBox("Dip Direction")
         self.checkBox_dip_dir.setChecked(True)
 
@@ -126,7 +124,7 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         row_stoch = QtWidgets.QHBoxLayout()
         row_stoch.addWidget(self.radioButton_stochastic)
         row_stoch.addWidget(self.mQgsDoubleSpinBox_percent)
-        row_stoch.addWidget(self._lbl("%", Qt.AlignLeft | Qt.AlignVCenter))
+        row_stoch.addWidget(self._lbl("%", ALIGN_LEFT | ALIGN_VCENTER))
         row_stoch.addStretch()
         vbox.addLayout(row_stoch)
         self._subsample_group.addButton(self.radioButton_stochastic)
@@ -184,7 +182,7 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         row_target.addSpacing(20)
         row_target.addWidget(self.checkBox_target_n)
         row_target.addWidget(self.spinBox_target_n)
-        row_target.addWidget(self._lbl("points (±15%)", Qt.AlignLeft | Qt.AlignVCenter))
+        row_target.addWidget(self._lbl("points (±15%)", ALIGN_LEFT | ALIGN_VCENTER))
         row_target.addStretch()
         vbox.addLayout(row_target)
 
@@ -351,7 +349,7 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
 
         # Equation reminder label
         eq_lbl = QtWidgets.QLabel("TN = ON × (OS/TS)^(x/2)   x: 1=points  2=lines  3=polygons")
-        eq_lbl.setAlignment(Qt.AlignCenter)
+        eq_lbl.setAlignment(ALIGN_CENTER)
         f = eq_lbl.font()
         f.setItalic(True)
         eq_lbl.setFont(f)

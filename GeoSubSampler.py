@@ -30,23 +30,10 @@ from qgis.PyQt.QtWidgets import QDockWidget
 from qgis.core import QgsMessageLog, Qgis
 
 
-# Qt5/Qt6 Compatibility Layer
-try:
-    # Try Qt6 style first
-    _test = Qt.DockWidgetArea.RightDockWidgetArea
-    # Qt6 detected
-    QT6 = True
-
-    # Qt6 style enums are already available
-    RightDockWidgetArea = Qt.DockWidgetArea.RightDockWidgetArea
-
-
-except AttributeError:
-    # Qt5 detected
-    QT6 = False
-
-    # Qt5 style enums
-    RightDockWidgetArea = Qt.RightDockWidgetArea
+# Qt5/Qt6 compatibility (QGIS 3.x / 4.x enum names)
+from .qt_compat import (RIGHT_DOCK_AREA as RightDockWidgetArea, MSG_INFO, MSG_WARNING,
+                        MSG_CRITICAL, MSG_SUCCESS, POINT_LAYER, LINE_LAYER, POLYGON_LAYER)
+QT6 = hasattr(Qt, "AlignmentFlag")
 
 
 # Initialize Qt resources from file resources.py
@@ -387,7 +374,7 @@ class GeoSubSampler:
             if (dip_col == "" or dip_dir_col == "") and checkFields:
                 self.iface.messageBar().pushMessage(
                     "Please define dip & dip dir/strike fields before continuing!",
-                    level=Qgis.Warning,
+                    level=MSG_WARNING,
                     duration=15,
                 )
                 return False
@@ -407,7 +394,7 @@ class GeoSubSampler:
                 self.iface.messageBar().pushMessage(
                     f"T&P: field(s) {missing} not found in the loaded data. "
                     f"Available columns: {list(gdf.columns)}",
-                    level=Qgis.Critical, duration=20)
+                    level=MSG_CRITICAL, duration=20)
                 return False
 
             # Add coordinate columns from geometry (engine needs these for grid operations)
@@ -426,7 +413,7 @@ class GeoSubSampler:
                 self.iface.messageBar().pushMessage(
                     f"{n_dropped} point(s) with null dip/dip-dir/coordinates "
                     f"dropped before subsampling.",
-                    level=Qgis.Warning, duration=10)
+                    level=MSG_WARNING, duration=10)
 
             # If input is strike, convert to dip direction (dip_dir = strike - 90)
             if not self.dockwidget.checkBox_dip_dir.isChecked():
@@ -443,7 +430,7 @@ class GeoSubSampler:
         else:
             self.iface.messageBar().pushMessage(
                 "Sorry, only layers saved to disk as a shapefile can be processed!",
-                level=Qgis.Warning,
+                level=MSG_WARNING,
                 duration=15,
             )
             return False
@@ -483,9 +470,9 @@ class GeoSubSampler:
             self.iface.messageBar().pushMessage(
                 f"Ignore codes: {s['triangulated']} of {s['matched']} matching polygon(s) "
                 f"triangulated ({s['above_threshold']} above the area threshold left as is).",
-                level=Qgis.Info, duration=8)
+                level=MSG_INFO, duration=8)
 
-    def _warn(self, message, level=Qgis.Warning, duration=15):
+    def _warn(self, message, level=MSG_WARNING, duration=15):
         """Print to the console and show the message at the top of the QGIS pane."""
         print(message)
         self.iface.messageBar().pushMessage(message, level=level, duration=duration)
@@ -505,7 +492,7 @@ class GeoSubSampler:
                 detail = str(exc)
                 if "NoneType" in detail:
                     detail = "a required layer is not selected (" + detail + ")"
-                self._warn(f"{label} failed: {detail}", level=Qgis.Critical, duration=20)
+                self._warn(f"{label} failed: {detail}", level=MSG_CRITICAL, duration=20)
         return wrapper
 
     def _add_layer_with_style(self, new_layer, source_layer, fail_msg=''):
@@ -514,7 +501,7 @@ class GeoSubSampler:
             self._warn(
                 f"Failed to load result layer '{fail_msg or new_layer.name()}' - "
                 f"the tool produced no output (see console).",
-                level=Qgis.Critical)
+                level=MSG_CRITICAL)
             return
         try:
             from qgis.PyQt.QtXml import QDomDocument
@@ -586,12 +573,12 @@ class GeoSubSampler:
                     shutil.copyfile(base + ext, dest_base + ext)
         except OSError as exc:
             self._warn(f"'{os.path.dirname(shp_path)}' is not writable and a working "
-                       f"copy could not be made: {exc}", level=Qgis.Critical)
+                       f"copy could not be made: {exc}", level=MSG_CRITICAL)
             return shp_path
         copies[shp_path] = dest_base + '.shp'
         self._warn(f"'{os.path.dirname(shp_path)}' is not writable, so a working copy "
                    f"was made in {os.path.dirname(dest_base)} and results will be saved there.",
-                   level=Qgis.Info, duration=10)
+                   level=MSG_INFO, duration=10)
         return copies[shp_path]
 
     def _make_output_path(self, qgis_layer, suffix):
@@ -623,7 +610,7 @@ class GeoSubSampler:
             gdf.to_file(alt, driver="ESRI Shapefile")
         except Exception as exc2:
             raise RuntimeError(f"could not save the result to {alt}: {exc2}") from exc2
-        self._warn(f"Result saved to {alt} instead.", level=Qgis.Info)
+        self._warn(f"Result saved to {alt} instead.", level=MSG_INFO)
         return alt
 
     def finalisePointSampler(self, gdf2, qgis_layer, name, param=0):
@@ -685,7 +672,7 @@ class GeoSubSampler:
             self.iface.messageBar().pushMessage(
                 "No points were retained - an empty point layer was created. "
                 "Check that the polygon and point layers overlap.",
-                level=Qgis.Warning,
+                level=MSG_WARNING,
                 duration=15,
             )
         else:
@@ -951,7 +938,7 @@ class GeoSubSampler:
             if require_points_layer:
                 self.iface.messageBar().pushMessage(
                     "Please select a points layer before continuing!",
-                    level=Qgis.Warning, duration=15)
+                    level=MSG_WARNING, duration=15)
                 return False
             return True
 
@@ -960,7 +947,7 @@ class GeoSubSampler:
         if not dip_col or not dip_dir_col:
             self.iface.messageBar().pushMessage(
                 "Please define dip & dip dir/strike fields before continuing!",
-                level=Qgis.Warning, duration=15)
+                level=MSG_WARNING, duration=15)
             return False
         return True
 
@@ -1083,13 +1070,13 @@ class GeoSubSampler:
         except ValueError:
             self.iface.messageBar().pushMessage(
                 "T&P Scaling: enter valid numbers for ratio and increment.",
-                level=Qgis.Warning, duration=10)
+                level=MSG_WARNING, duration=10)
             return
 
         if ratio <= 0 or ratio > 1:
             self.iface.messageBar().pushMessage(
                 "T&P Scaling: OS/TS ratio must be in the range (0, 1].",
-                level=Qgis.Warning, duration=10)
+                level=MSG_WARNING, duration=10)
             return
 
         iterations = scale_iterations(ratio, increment)
@@ -1382,7 +1369,7 @@ class GeoSubSampler:
                 writer.writerows(report_rows)
             self.iface.messageBar().pushMessage(
                 f"T&P scaling complete. Report written to {report_path}",
-                level=Qgis.Success, duration=15)
+                level=MSG_SUCCESS, duration=15)
             print(f"T&P report: {report_path}")
         except Exception as exc:
             self._warn(f"T&P scaling finished but the report could not be written: {exc}")
@@ -1538,7 +1525,7 @@ class GeoSubSampler:
             else:
                 self.iface.messageBar().pushMessage(
                     "Sorry, only layers saved to disk as a shapefile can be processed!",
-                    level=Qgis.Warning,
+                    level=MSG_WARNING,
                     duration=15,
                 )
 
@@ -1576,7 +1563,7 @@ class GeoSubSampler:
         else:
             self.iface.messageBar().pushMessage(
                 "Sorry, only layers saved to disk as a shapefile can be processed!",
-                level=Qgis.Warning,
+                level=MSG_WARNING,
                 duration=15,
             )
 
@@ -1689,7 +1676,7 @@ class GeoSubSampler:
         else:
             self.iface.messageBar().pushMessage(
                 "Sorry, only layers saved to disk as a shapefile can be processed!",
-                level=Qgis.Warning,
+                level=MSG_WARNING,
                 duration=15,
             )
 
@@ -1718,7 +1705,7 @@ class GeoSubSampler:
             if best_n is None:
                 self.iface.messageBar().pushMessage(
                     "Could not cluster faults - too few faults with distinct orientations (see console).",
-                    level=Qgis.Warning,
+                    level=MSG_WARNING,
                     duration=15,
                 )
                 return
@@ -1999,15 +1986,15 @@ class GeoSubSampler:
             self.defineTips()
             self.dockwidget.show()
             self.dockwidget.mMapLayerComboBox_points.setFilters(
-                QgsMapLayerProxyModel.PointLayer
+                POINT_LAYER
             )
 
             self.dockwidget.mMapLayerComboBox_maps_polygons.setFilters(
-                QgsMapLayerProxyModel.PolygonLayer
+                POLYGON_LAYER
             )
 
             self.dockwidget.mMapLayerComboBox_fault_polylines.setFilters(
-                QgsMapLayerProxyModel.LineLayer
+                LINE_LAYER
             )
             layerName = self.dockwidget.mMapLayerComboBox_points.currentText()
             if layerName:
