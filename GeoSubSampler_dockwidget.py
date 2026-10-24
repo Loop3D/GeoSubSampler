@@ -3,13 +3,31 @@
 GeoSubSamplerDockWidget — pure-Python UI (no .ui file required).
 """
 
+import sys
+
 from qgis.PyQt import QtWidgets
-from qgis.PyQt.QtCore import pyqtSignal
+from qgis.PyQt.QtCore import pyqtSignal, QSettings
 from qgis.gui import QgsMapLayerComboBox, QgsFieldComboBox, QgsDoubleSpinBox
 from .qt_compat import (ALIGN_RIGHT, ALIGN_LEFT, ALIGN_VCENTER, ALIGN_CENTER, SCROLLBAR_ALWAYS_ON,
                         FRAME_HLINE, FRAME_SUNKEN, FIELD_NUMERIC)
 
 _SB_ALWAYS = SCROLLBAR_ALWAYS_ON
+
+# The native macOS style pads buttons/combos heavily and the default font is
+# larger than on Windows, so the same layout comes out ~30% bigger. On macOS
+# the dock uses a smaller font and the compact Fusion style instead.
+# Set QSettings "GeoSubSampler/compactMacUI" to false to keep the native look.
+IS_MACOS = sys.platform == "darwin"
+MACOS_FONT_SCALE = 0.85
+
+
+def _compact_mac_ui():
+    if not IS_MACOS:
+        return False
+    return str(QSettings().value("GeoSubSampler/compactMacUI", True)).lower() not in ("false", "0")
+
+
+COMPACT_MAC = _compact_mac_ui()
 
 
 class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
@@ -63,6 +81,30 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
 
         scroll.setWidget(content)
         self.setWidget(scroll)
+
+        if COMPACT_MAC:
+            self._apply_compact_mac_style(scroll)
+
+    def _apply_compact_mac_style(self, top):
+        # QGIS sets the font size through an application stylesheet, which
+        # overrides setFont(), so the smaller size has to be a stylesheet too.
+        try:
+            base = float(QSettings().value("qgis/stylesheet/fontPointSize", 0))
+        except (TypeError, ValueError):
+            base = 0
+        if base <= 0:
+            base = QtWidgets.QApplication.font().pointSizeF()
+        if base > 0:
+            top.setStyleSheet(
+                "QWidget { font-size: %.1fpt; }" % (base * MACOS_FONT_SCALE)
+            )
+        # Keep a reference: QWidget.setStyle does not take ownership.
+        self._compact_style = QtWidgets.QStyleFactory.create("Fusion")
+        if self._compact_style is None:
+            return
+        top.setStyle(self._compact_style)
+        for w in top.findChildren(QtWidgets.QWidget):
+            w.setStyle(self._compact_style)
 
     # ------------------------------------------------------------------
     # Layer selectors (top, outside groups)
