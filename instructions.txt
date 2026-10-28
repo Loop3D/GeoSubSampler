@@ -1,0 +1,15 @@
+1) Write a python script for use in qgis that takes the selected polyline layer as input and makes a table of the distance between the closest nodes in each pair of polylines less than 5km apart in the selected polyline. The table only needs to be filled on the top diagonal and the fault OBJECTID field should be used as row and column headers. Optimise the code for speed.
+
+2) For the selected polyline:
+Sort the faults by largest stratigraphic offset to smallest, and within equal stratigraphic offset levels "max_off_lv" (it is a categorical), sort by edge_type (X-X then X-Z then Z-Z) and finally by length (long to short). Add a new field with the sort order.
+
+3 Too slow!!!) a new script that for each fault in the selected layer, starting with the lowest sort order (biggest numer) find it's nearest neighbour in the node distance matrix and compare its sort rank. If it has a higher rank (smaller sort number), swap ranks. loop through all polylines and repeat until there are no more changes in rank, or we try 10 times. Once finished copy th enew ranks back to the polyline file. Write out pass number to console each time so I can estimate time taken.
+
+3b) For the selected polyline layer, add an integrer field called survive and initialise all values as 1. For each fault, compare it to its nearest neighbour, if the fault is within 5km and  is the same orientation class and is lower ranked (higher sort number), set the survive value to 0. 
+
+3c) Better rule: I'd replace the nearest-neighbour test with a greedy pass in rank order:
+
+Go through the faults from best rank to worst.
+A fault gets survive = 0 if a fault already kept, with the same cluster and a better rank, lies within 5 km.
+Otherwise it is kept.
+A simple "lower ranked than any in-range neighbour" rule would wipe out nearly every fault. The greedy pass removes only faults that are redundant with something you keep, and it uses all 12,339 pairs.
