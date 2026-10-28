@@ -31,8 +31,32 @@ layers in your project, and results are added to the map automatically with the 
 were made from.
 
 The ArcGIS Pro Python environment needs `geopandas` (not included by default) and, if not already installed,
-`scikit-learn`, `networkx`, `scipy`, `matplotlib` and `fiona`. See [ARCGIS/README.md](ARCGIS/README.md) for
+`scikit-learn`, `networkx`, `scipy`, `matplotlib`, `fiona` and `triangle`. See [ARCGIS/README.md](ARCGIS/README.md) for
 installation and usage notes.
+
+### Setting up the ArcGIS Pro Python environment
+
+The toolbox has a tool that sets up the environment for you. ArcGIS Pro's default environment
+(arcgispro-py3) cannot be changed, so the tool clones it into a new environment called
+`arcgispro-py3-geotools`, installs the missing packages, checks that they all import, and makes the new
+environment the one ArcGIS Pro uses.
+
+1. In the ArcGIS Pro Catalog pane, go to **Toolboxes > Add Toolbox** and select `ARCGIS/GeoSubSampler.pyt`.
+2. In the GeoSubSampler toolbox, open **Setup > Set Up Python Environment** and click **Run**. It needs an
+   internet connection and takes about 10 minutes. Click **View Details** in the Geoprocessing pane to
+   follow its progress.
+3. When it has finished, **restart ArcGIS Pro**, then run **Launch GeoSubSampler GUI**.
+
+The same tool is in the **SGTool**, **tomofast_x_q** and **GeoSubSampler** toolboxes and installs what all
+three need, so you only need to run it once. Running it again only adds what is missing. Its options let you
+choose a different environment name, leave ArcGIS Pro's active environment unchanged (activate it later in
+Package Manager), or delete the environment and start again from a new clone.
+
+The tool runs the script `ARCGIS/setup_arcgispro_env.py`, which can also be run from a Windows Command Prompt
+(change the paths if ArcGIS Pro or this repository are somewhere else):
+```
+"C:\Program Files\ArcGIS\Pro\bin\Python\envs\arcgispro-py3\python.exe" "C:\path\to\GeoSubSampler\ARCGIS\setup_arcgispro_env.py"
+```
 
 ## Features
 

@@ -11,7 +11,12 @@ ArcGIS Pro equivalent of the GeoSubSampler QGIS plugin, modelled on `SGTool/ARCG
 ## Install
 1. In ArcGIS Pro: Catalog > Toolboxes > Add Toolbox > `ARCGIS/GeoSubSampler.pyt`.
 2. The ArcGIS Pro Python environment needs `geopandas`, `shapely`, `scikit-learn`, `networkx`,
-   `scipy`, `matplotlib` (and `fiona` for map simplification). Clone the default environment in the
+   `scipy`, `matplotlib` (and `fiona` for map simplification, `triangle` for dyke triangulation).
+   The easiest way is to run the toolbox's **Setup > Set Up Python Environment** tool, then restart
+   ArcGIS Pro. It runs `setup_arcgispro_env.py` from this folder, which clones the default environment,
+   installs everything, and activates the clone (see the main
+   [README](../README.md#setting-up-the-arcgis-pro-python-environment)).
+   To do it by hand instead: clone the default environment in the
    Python Package Manager, add what is missing, and activate the clone. The launch tool checks this
    and says what is missing.
    > **Note:** geopandas is not included in the default ArcGIS Pro environment and has to be
