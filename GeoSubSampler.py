@@ -51,7 +51,7 @@ from .calcs.FaultLengths import FaultLengths
 from .calcs.FaultsGraph import FaultsGraph
 from .calcs.FaultStratOffset import FaultStratOffset
 from .calcs.FaultClusterOrientation import FaultsOrientations
-from .calcs.FirstOrderOrientation import SubsamplingEngine, save_grid_to_shapefile
+from .calcs.FirstOrderOrientation import SubsamplingEngine, save_grid_to_shapefile, dip_field_problem
 from .calcs.TopferPillewizer import dipdir_to_strike, topfer_count, scale_iterations, scale_points_tp, scale_lines_tp, scale_polygons_tp
 from .calcs.PolygonSimplification import SimplificationEngine, vector_simplify_file_two_stage
 import geopandas as gpd
@@ -370,6 +370,7 @@ class GeoSubSampler:
         if os.path.exists(self._resolved_source(self.points_layer)):
 
             gdf = gpd.read_file(self._resolved_source(self.points_layer))
+            fields_selected = True
 
             if (dip_col == "" or dip_dir_col == "") and checkFields:
                 self.iface.messageBar().pushMessage(
@@ -379,6 +380,7 @@ class GeoSubSampler:
                 )
                 return False
             elif dip_col == "" or dip_dir_col == "":
+                fields_selected = False
                 dip_col = gdf.columns[1]
                 dip_dir_col = gdf.columns[2]
             else:
@@ -396,6 +398,14 @@ class GeoSubSampler:
                     f"Available columns: {list(gdf.columns)}",
                     level=MSG_CRITICAL, duration=20)
                 return False
+
+            # Dip must be 0-90: values above that mean the dip and dip dir/strike fields
+            # have been swapped (only checked for fields the user actually selected)
+            if fields_selected:
+                problem = dip_field_problem(gdf[dip_col], dip_col)
+                if problem:
+                    self._warn(problem + " Nothing was processed.", level=MSG_CRITICAL, duration=20)
+                    return False
 
             # Add coordinate columns from geometry (engine needs these for grid operations)
             gdf = gdf.copy()
@@ -728,7 +738,8 @@ class GeoSubSampler:
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    def _find_grid_size_for_target(self, run_fn, gdf, min_x, max_x, min_y, max_y, target_n):
+    def _find_grid_size_for_target(self, run_fn, gdf, min_x, max_x, min_y, max_y, target_n,
+                                   count_fn=None):
         """
         Find the grid cell size that produces approximately target_n output points.
 
@@ -737,12 +748,18 @@ class GeoSubSampler:
           2. Proportional correction using actual vs target count
           3. Binary search if still outside 15% tolerance
         Returns (cell_size_in_crs_units, actual_count).
+
+        count_fn(cell_size) -> number of output points, if it can be had without running
+        the method (e.g. engine.count_cells); otherwise run_fn is run at every trial size.
         """
         area = (max_x - min_x) * (max_y - min_y)
         tol = 0.15
 
         def count(cs):
-            n = self._count_gridcell_output(run_fn, gdf, min_x, max_x, min_y, max_y, cs)
+            if count_fn is not None:
+                n = count_fn(cs)
+            else:
+                n = self._count_gridcell_output(run_fn, gdf, min_x, max_x, min_y, max_y, cs)
             print(f"  [target N] cell={cs:.2f} → {n} points")
             return n
 
@@ -809,43 +826,6 @@ class GeoSubSampler:
                 gdf2[dip_dir_col], gdf_in.get(dip_dir_col))
         return gdf2
 
-    def gridCellAveraging(self):
-        result = self.setUpPointSampler()
-        if not result:
-            return
-        gdf, engine, dip_col, dip_dir_col = result
-        self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
-        is_geographic = self.point_layer.crs().isGeographic()
-        bounds = gdf.total_bounds
-        min_x, max_x = int(bounds[0]), int(bounds[2]) + 1
-        min_y, max_y = int(bounds[1]), int(bounds[3]) + 1
-
-        if self.dockwidget.checkBox_target_n.isChecked():
-            target_n = self.dockwidget.spinBox_target_n.value()
-            grid_size, _ = self._find_grid_size_for_target(
-                engine.gridcell_average, gdf, min_x, max_x, min_y, max_y, target_n)
-            display_size = grid_size * 110000 if is_geographic else grid_size
-            self.dockwidget.lineEdit_grid_size.setText(f"{display_size:.0f}")
-        else:
-            grid_size = float(self.dockwidget.lineEdit_grid_size.text())
-            display_size = grid_size
-            if is_geographic:
-                grid_size = grid_size / 110000
-
-        tmpdir = tempfile.mkdtemp()
-        try:
-            file = engine.gridcell_average(gdf, min_x, max_x, min_y, max_y,
-                                           n=grid_size, path_out=tmpdir)
-            gdf2 = save_grid_to_shapefile(tmpdir, file)
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
-        if gdf2 is not None:
-            gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
-            gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
-                columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
-            gdf2 = self._restore_strike(gdf2, gdf, dip_dir_col)
-            self.finalisePointSampler(gdf2, self.points_layer, "gridCellAveraging", display_size)
-
     def kent(self):
         result = self.setUpPointSampler()
         if not result:
@@ -857,10 +837,26 @@ class GeoSubSampler:
         min_x, max_x = int(bounds[0]), int(bounds[2]) + 1
         min_y, max_y = int(bounds[1]), int(bounds[3]) + 1
 
+        # Optional kappa filter: blank (or 0) keeps every cell
+        kappa_text = self.dockwidget.lineEdit_kent_kappa_min.text().strip()
+        try:
+            kappa_min = float(kappa_text) if kappa_text else None
+        except ValueError:
+            self._warn("Kent: Min kappa must be a number (or blank for no filter).")
+            return
+        if kappa_min is not None and kappa_min <= 0:
+            kappa_min = None
+
+        def kent_fn(*args, **kwargs):
+            return engine.spherical_kent(*args, kappa_min=kappa_min, **kwargs)
+
         if self.dockwidget.checkBox_target_n.isChecked():
             target_n = self.dockwidget.spinBox_target_n.value()
+            # Without a kappa filter every non-empty cell is output, so just count cells
+            count_fn = None if kappa_min is not None else (
+                lambda cs: engine.count_cells(gdf, min_x, max_x, min_y, max_y, cs))
             grid_size, _ = self._find_grid_size_for_target(
-                engine.spherical_kent, gdf, min_x, max_x, min_y, max_y, target_n)
+                kent_fn, gdf, min_x, max_x, min_y, max_y, target_n, count_fn=count_fn)
             display_size = grid_size * 110000 if is_geographic else grid_size
             self.dockwidget.lineEdit_grid_size_kent.setText(f"{display_size:.0f}")
         else:
@@ -871,17 +867,22 @@ class GeoSubSampler:
 
         tmpdir = tempfile.mkdtemp()
         try:
-            file = engine.spherical_kent(gdf, min_x, max_x, min_y, max_y,
-                                         n=grid_size, path_out=tmpdir)
+            file = kent_fn(gdf, min_x, max_x, min_y, max_y,
+                           n=grid_size, path_out=tmpdir)
             gdf2 = save_grid_to_shapefile(tmpdir, file)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+        if gdf2 is None and kappa_min is not None:
+            self._warn(f"Kent: no cell reached Min kappa {kappa_min:g} - nothing written. "
+                       f"Lower Min kappa or enlarge the grid size.")
         if gdf2 is not None:
             gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
             gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
                 columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
             gdf2 = self._restore_strike(gdf2, gdf, dip_dir_col)
-            self.finalisePointSampler(gdf2, self.points_layer, "grid_cell_kent", display_size)
+            name = ("grid_cell_kent" if kappa_min is None
+                    else f"grid_cell_kent_kappa{kappa_min:g}")
+            self.finalisePointSampler(gdf2, self.points_layer, name, display_size)
 
     def kentOutlier(self):
         result = self.setUpPointSampler()
@@ -894,10 +895,18 @@ class GeoSubSampler:
         min_x, max_x = int(bounds[0]), int(bounds[2]) + 1
         min_y, max_y = int(bounds[1]), int(bounds[3]) + 1
 
+        # "Iterative": keep removing outliers (leave-one-out, repeated) instead of just one
+        iterative = self.dockwidget.checkBox_kent_outlier_iter.isChecked()
+
+        def outlier_fn(*args, **kwargs):
+            return engine.outlier_removal(*args, iterative=iterative, **kwargs)
+
         if self.dockwidget.checkBox_target_n.isChecked():
             target_n = self.dockwidget.spinBox_target_n.value()
+            # Every non-empty cell is output, whether or not outliers are removed from it
             grid_size, _ = self._find_grid_size_for_target(
-                engine.outlier_removal, gdf, min_x, max_x, min_y, max_y, target_n)
+                outlier_fn, gdf, min_x, max_x, min_y, max_y, target_n,
+                count_fn=lambda cs: engine.count_cells(gdf, min_x, max_x, min_y, max_y, cs))
             display_size = grid_size * 110000 if is_geographic else grid_size
             self.dockwidget.lineEdit_grid_size_kent_2.setText(f"{display_size:.0f}")
         else:
@@ -908,8 +917,8 @@ class GeoSubSampler:
 
         tmpdir = tempfile.mkdtemp()
         try:
-            file = engine.outlier_removal(gdf, min_x, max_x, min_y, max_y,
-                                          n=grid_size, path_out=tmpdir)
+            file = outlier_fn(gdf, min_x, max_x, min_y, max_y,
+                              n=grid_size, path_out=tmpdir)
             gdf2 = save_grid_to_shapefile(tmpdir, file)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -918,7 +927,52 @@ class GeoSubSampler:
             gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
                 columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
             gdf2 = self._restore_strike(gdf2, gdf, dip_dir_col)
-            self.finalisePointSampler(gdf2, self.points_layer, "grid_cell_kentOutlier", display_size)
+            name = "grid_cell_kentOutlierIter" if iterative else "grid_cell_kentOutlier"
+            self.finalisePointSampler(gdf2, self.points_layer, name, display_size)
+
+    def carmichael(self):
+        """Grid-cell Kent averaging with iterative multi-outlier removal (Carmichael 2016)."""
+        result = self.setUpPointSampler()
+        if not result:
+            return
+        gdf, engine, dip_col, dip_dir_col = result
+        self.point_layer = self.dockwidget.mMapLayerComboBox_points.currentLayer()
+        is_geographic = self.point_layer.crs().isGeographic()
+        bounds = gdf.total_bounds
+        min_x, max_x = int(bounds[0]), int(bounds[2]) + 1
+        min_y, max_y = int(bounds[1]), int(bounds[3]) + 1
+
+        if self.dockwidget.checkBox_target_n.isChecked():
+            target_n = self.dockwidget.spinBox_target_n.value()
+            # Carmichael outputs cells with more than 3 measurements
+            grid_size, _ = self._find_grid_size_for_target(
+                engine.outlier_carmichael, gdf, min_x, max_x, min_y, max_y, target_n,
+                count_fn=lambda cs: engine.count_cells(gdf, min_x, max_x, min_y, max_y, cs,
+                                                       min_points=4))
+            display_size = grid_size * 110000 if is_geographic else grid_size
+            self.dockwidget.lineEdit_grid_size_carm.setText(f"{display_size:.0f}")
+        else:
+            grid_size = float(self.dockwidget.lineEdit_grid_size_carm.text())
+            display_size = grid_size
+            if is_geographic:
+                grid_size = grid_size / 110000
+
+        tmpdir = tempfile.mkdtemp()
+        try:
+            file = engine.outlier_carmichael(gdf, min_x, max_x, min_y, max_y,
+                                             n=grid_size, path_out=tmpdir)
+            gdf2 = save_grid_to_shapefile(tmpdir, file)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        if gdf2 is None:
+            self._warn("Carmichael: no cell had more than 3 measurements - nothing written. "
+                       "Use a larger grid size.")
+        else:
+            gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
+            gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
+                columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
+            gdf2 = self._restore_strike(gdf2, gdf, dip_dir_col)
+            self.finalisePointSampler(gdf2, self.points_layer, "grid_cell_carmichael", display_size)
 
     def _validate_dip_fields(self, require_points_layer):
         """
@@ -957,12 +1011,12 @@ class GeoSubSampler:
             return
         if not self._validate_dip_fields(require_points_layer=True):
             return
-        if self.dockwidget.radioButton_gsa.isChecked():
-            self.gridCellAveraging()
-        elif self.dockwidget.radioButton_kent.isChecked():
+        if self.dockwidget.radioButton_kent.isChecked():
             self.kent()
         elif self.dockwidget.radioButton_kent_outlier.isChecked():
             self.kentOutlier()
+        elif self.dockwidget.radioButton_carmichael.isChecked():
+            self.carmichael()
         elif self.dockwidget.radioButton_1o.isChecked():
             self.firstOrder()
 
@@ -1084,12 +1138,12 @@ class GeoSubSampler:
         # --- Determine selected orientation method -----------------------
         if self.dockwidget.radioButton_stochastic.isChecked():
             point_method = 'stochastic'
-        elif self.dockwidget.radioButton_gsa.isChecked():
-            point_method = 'gridcell_average'
         elif self.dockwidget.radioButton_kent.isChecked():
             point_method = 'spherical_kent'
         elif self.dockwidget.radioButton_1o.isChecked():
             point_method = 'firstorder'
+        elif self.dockwidget.radioButton_carmichael.isChecked():
+            point_method = 'outlier_carmichael'
         else:
             point_method = 'outlier_removal'
 
@@ -1157,7 +1211,7 @@ class GeoSubSampler:
             current_pt_gdf, pt_engine, pt_dip_col, pt_dip_dir_col = pt_result
 
         try:
-            grid_sz = float(self.dockwidget.lineEdit_grid_size.text())
+            grid_sz = float(self.dockwidget.lineEdit_grid_size_kent.text())
         except ValueError:
             grid_sz = 5000.0
 
@@ -1347,7 +1401,8 @@ class GeoSubSampler:
         if point_method == 'firstorder' and firstorder_kwargs:
             settings['1o distance limit'] = firstorder_kwargs['dist_buffer']
             settings['1o angle limit'] = firstorder_kwargs['angle_tol']
-        elif point_method in ('gridcell_average', 'spherical_kent', 'outlier_removal'):
+        elif point_method in ('gridcell_average', 'spherical_kent', 'outlier_removal',
+                              'outlier_carmichael'):
             settings['grid size starting guess'] = grid_sz
         report_rows.insert(0, {
             'step': 'settings', 'OS/TS ratio': '', 'step ratio': '', 'layer': 'all',
@@ -1398,6 +1453,10 @@ class GeoSubSampler:
                     return
                 dip_col = self._resolved_field(self.point_layer, dip_col)
                 dip_dir_col = self._resolved_field(self.point_layer, dip_dir_col)
+                problem = dip_field_problem(orientation_gdf[dip_col], dip_col)
+                if problem:
+                    self._warn(problem + " Nothing was processed.", level=MSG_CRITICAL, duration=20)
+                    return
 
                 # The engine expects dip direction. If the field holds strike,
                 # convert it exactly as setUpPointSampler does (the engine's
@@ -1812,17 +1871,34 @@ class GeoSubSampler:
         self.dockwidget.mQgsDoubleSpinBox_percent.setToolTip(
             "Percentage of points to keep, between 0 and 100"
         )
-        self.dockwidget.radioButton_gsa.setToolTip(
-            "Grid Cell Averaging of points"
-        )
-        self.dockwidget.lineEdit_grid_size.setToolTip(
-            "Grid size in layer units for cell averaging"
-        )
         self.dockwidget.radioButton_kent.setToolTip(
-            "Grid Cell Averaging of points using Kent statistics"
+            "Grid Cell Averaging of points using Kent statistics.\n"
+            "Output points sit at the mean position of each cell's measurements, with the vector-mean\n"
+            "orientation plus count, Kent kappa (concentration) and beta (ovalness) attributes."
         )
         self.dockwidget.lineEdit_grid_size_kent.setToolTip(
             "Grid size in layer units for cell averaging using Kent statistics"
+        )
+        self.dockwidget.lineEdit_kent_kappa_min.setToolTip(
+            "Kent only. Keep a cell only if its Kent kappa (concentration) is at least this value.\n"
+            "Drops cells with a single measurement and cells whose orientations are scattered.\n"
+            "Blank (or 0) keeps every cell. The thesis models used 5."
+        )
+        self.dockwidget.radioButton_carmichael.setToolTip(
+            "Grid Cell Averaging using Kent statistics, removing several outliers per cell\n"
+            "(Carmichael & Ailleres 2016). Points are ranked by angle from the cell mean and\n"
+            "removed one at a time while Kent kappa is recomputed; everything up to the\n"
+            "biggest jump in kappa is treated as outliers. Cells with 3 or fewer points are skipped."
+        )
+        self.dockwidget.checkBox_kent_outlier_iter.setToolTip(
+            "Kent Outlier only. Remove several outliers per cell instead of one: points are taken\n"
+            "out in order of how much their removal raises Kent kappa (up to half the cell), and the\n"
+            "sequence is cut at its biggest kappa jump - only if that jump stands out (5x the\n"
+            "typical step), otherwise nothing is removed. Differs from Carmichael, which orders\n"
+            "points by angle from the cell mean. Not applied by the Töpfer & Pillewizer tool."
+        )
+        self.dockwidget.lineEdit_grid_size_carm.setToolTip(
+            "Grid size in layer units for Carmichael outlier averaging"
         )
         self.dockwidget.radioButton_kent_outlier.setToolTip(
             "Grid Cell Averaging using Kent statistics, removing biggest outlier"
@@ -1835,7 +1911,7 @@ class GeoSubSampler:
         )
 
         target_n_tip = (
-            "Grid Cell Avg, Kent and Kent Outlier only.\n"
+            "Kent, Kent Outlier and Carmichael only.\n"
             "Instead of using the Grid Size box, search for the grid cell size that gives "
             "approximately N output points (within ±15%). The grid size found is written back "
             "into the Grid Size box of the selected method.\n"

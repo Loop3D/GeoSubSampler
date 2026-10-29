@@ -7,7 +7,7 @@ name=GeoSubSampler
 qgisMinimumVersion=3.24
 qgisMaximumVersion=4.99
 description=Subsamples geological orientations, faults and polygons
-version=0.3.1
+version=0.4
 author=Ranee Joshi, Mark Jessell
 email=raneejoshi@gmail.com
 
@@ -21,7 +21,7 @@ repository=http://repo
 
 hasProcessingProvider=no
 # Uncomment the following line and add your changelog:
-changelog=0.3.1 - Fixed loading on QGIS 4 / Qt6 (scoped Qt and QGIS enum names via qt_compat.py); still works on QGIS 3.x. 0.3 - Added an ArcGIS Pro version (ARCGIS/GeoSubSampler.pyt, Tkinter GUI) with the same point, fault, polygon and Töpfer & Pillewizer tools. The QGIS plugin itself is unchanged.
+changelog=0.4 - Kent: new, fixed Kent estimator, optional Min kappa filter, count/kappa/beta attributes; Kent Outlier: one outlier per cell by default, optional Iterative mode (several outliers, vectorised so it is fast); new Carmichael iterative outlier method; Grid Cell Avg removed (identical to Kent without kappa); auto-fit to N points much faster; warning when the Dip field holds values outside 0-90 (swapped fields); ArcGIS Pro version updated to match; calcs added to pb_tool extra_dirs. 0.3.1 - Fixed loading on QGIS 4 / Qt6 (scoped Qt and QGIS enum names via qt_compat.py); still works on QGIS 3.x. 0.3 - Added an ArcGIS Pro version (ARCGIS/GeoSubSampler.pyt, Tkinter GUI) with the same point, fault, polygon and Töpfer & Pillewizer tools. The QGIS plugin itself is unchanged.
 
 # Tags are comma separated with spaces allowed
 tags=python

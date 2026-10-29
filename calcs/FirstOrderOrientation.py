@@ -31,8 +31,8 @@ Seven subsampling algorithms
 1. decimation            – retain every nth point by digitisation order
 2. stochastic            – random-fraction sampling with a fixed seed
 3. gridcell_average      – grid-cell mean-vector averaging
-4. spherical_kent        – grid-cell Kent distribution statistics (κ, β)
-5. outlier_removal       – kappa-based single-outlier removal per cell
+4. spherical_kent        – grid-cell Kent statistics (κ, β); optional kappa_min filter
+5. outlier_removal       – max-Δκ single-outlier removal per cell (min_for_outlier=3)
 5b. outlier_carmichael   – iterative Δκ-break algorithm (Carmichael 2016)
 6. firstorder            – proximity + angular alignment to contacts
 
@@ -182,14 +182,22 @@ class SubsamplingEngine:
         """
         Estimate Kent distribution parameters for a cell of measurements.
 
-        The Kent (5-parameter Fisher–Bingham) distribution on the sphere is
+        The Kent (5-parameter Fisher-Bingham) distribution on the sphere is
         characterised by:
 
-        - **kappa (κ)** : concentration parameter (higher = tighter cluster)
-        - **beta (β)**  : ovalness / anisotropy parameter (0 = symmetric)
+        - **kappa** : concentration parameter (higher = tighter cluster)
+        - **beta**  : ovalness / anisotropy parameter (0 = rotationally symmetric)
 
-        The estimation follows Leong & Carlile (1998) using the orientation
-        matrix T and rotation matrices H, S, G.
+        Moment estimates of Kent (1982), as given by Leong & Carlile (1998)::
+
+            kappa = 1 / (2 - 2*r1 - r2) + 1 / (2 - 2*r1 + r2)
+            beta  = 0.5 * [1 / (2 - 2*r1 - r2) - 1 / (2 - 2*r1 + r2)]
+
+        where ``r1`` is the **mean** resultant length (resultant length / N)
+        and ``r2`` the difference between the two largest eigenvalues of the
+        scatter matrix in the plane normal to the mean direction, found by
+        rotating the scatter matrix with H (mean direction to the z axis) and
+        then K (the sword angle psi).
 
         Parameters
         ----------
@@ -197,87 +205,68 @@ class SubsamplingEngine:
 
         Returns
         -------
-        Tuple ``(count, kappa, beta)``.
+        Tuple ``(count, kappa, beta)``.  kappa is ``inf`` and beta ``nan`` when
+        the estimate has no finite value: a single measurement, identical
+        measurements, or a cell whose scatter makes a denominator <= 0.
 
         Notes
         -----
-        Two known transcription errors in both published sources are corrected:
+        Corrections (v1.1.0) to the v1.0.0 implementation, which produced
+        invalid kappa values (0, -1 or negative):
 
-        *H-matrix fix* — position [2, 1] must be  sin θ sin φ  (not
-        sin θ cos φ as printed in Leong & Carlile 1998 and Carmichael &
-        Ailleres 2016).
-
-        *Sword-angle fix* — denominator must be  B[0,0] − B[1,1]  (diagonal
-        difference), not  B[0,1] − B[1,1]  (off-diagonal minus diagonal)
-        as printed in both sources.
+        * ``r1`` is the mean resultant length, not the resultant length itself
+          (the resultant length grows with N, so 2 - 2*r1 was negative).
+        * H has the rotated axes as **columns** (H^T S H puts the mean
+          direction on z); v1.0.0 used the transpose.
+        * The mean-direction azimuth uses ``atan2`` so the quadrant is kept.
+        * The sword angle uses the diagonal difference B[0,0] - B[1,1]
+          (unchanged from v1.0.0).
         """
         df = pd.DataFrame(gpdataframe)
-        df[['l', 'm', 'n']] = pd.DataFrame(df['vector'].tolist(), index=df.index)
+        x = np.array(df['vector'].tolist(), dtype=float)
+        count = len(x)
+        if count < 2:
+            return (count, float('inf'), float('nan'))
 
-        l_sum, m_sum, n_sum = df['l'].sum(), df['m'].sum(), df['n'].sum()
-        count = len(df.index)
-
-        r = sqrt(float(l_sum**2 + m_sum**2 + n_sum**2))
-        if r < 1e-12:
+        xbar = x.mean(axis=0)
+        r1 = float(np.sqrt((xbar ** 2).sum()))          # mean resultant length
+        if r1 >= 1 - 1e-12:                              # identical measurements
+            return (count, float('inf'), float('nan'))
+        if r1 < 1e-12:                                   # antipodal vectors cancel
             return (count, float('nan'), float('nan'))
 
-        l_mean, m_mean, n_mean = l_sum / r, m_sum / r, n_sum / r
-
-        # --- Rotation matrix H (align z-axis with the mean direction) ---
-        theta = acos(max(-1.0, min(1.0, n_mean)))
-        phi   = (atan(m_mean / l_mean) if abs(l_mean) > 1e-12
-                 else (pi / 2 if m_mean >= 0 else -pi / 2))
-
-        # NOTE: H[2,1] = sin θ sin φ  (transcription error in both published sources)
+        g = xbar / r1
+        theta = np.arccos(np.clip(g[2], -1.0, 1.0))
+        phi = np.arctan2(g[1], g[0])
         H = np.array([
-            [cos(theta) * cos(phi),  cos(theta) * sin(phi), -sin(theta)],
-            [-sin(phi),               cos(phi),               0.0       ],
-            [sin(theta) * cos(phi),   sin(theta) * sin(phi),  cos(theta)],
+            [np.cos(theta) * np.cos(phi), -np.sin(phi), np.sin(theta) * np.cos(phi)],
+            [np.cos(theta) * np.sin(phi),  np.cos(phi), np.sin(theta) * np.sin(phi)],
+            [-np.sin(theta),               0.0,         np.cos(theta)],
         ])
-
-        # --- Orientation matrix T (second-moment matrix of direction cosines) ---
-        T = np.array([
-            [sum(df['l']**2),        sum(df['l'] * df['m']), sum(df['l'] * df['n'])],
-            [sum(df['l'] * df['m']), sum(df['m']**2),        sum(df['m'] * df['n'])],
-            [sum(df['l'] * df['n']), sum(df['m'] * df['n']), sum(df['n']**2)       ],
+        S = x.T @ x / count                              # scatter (orientation) matrix / N
+        B = H.T @ S @ H
+        psi = 0.5 * np.arctan2(2 * B[0, 1], B[0, 0] - B[1, 1])   # sword angle
+        K = np.array([
+            [np.cos(psi), -np.sin(psi), 0.0],
+            [np.sin(psi),  np.cos(psi), 0.0],
+            [0.0,          0.0,         1.0],
         ])
+        G = H @ K
+        V = G.T @ S @ G
+        r2 = V[0, 0] - V[1, 1]
 
-        # B = H^T (T/N) H
-        B = H.T @ (T / count) @ H
+        d1 = 2 - 2 * r1 - r2
+        d2 = 2 - 2 * r1 + r2
+        if d1 <= 0 or d2 <= 0:
+            return (count, float('inf'), float('nan'))
+        kappa = 1 / d1 + 1 / d2
+        beta = 0.5 * (1 / d1 - 1 / d2)
+        return (count, float(kappa), float(beta))
 
-        # --- Sword angle S ---
-        # NOTE: denominator = B[0,0] − B[1,1]  (transcription error in both sources)
-        b_diag_diff = B[0, 0] - B[1, 1]
-        sword = (0.5 * atan((2 * B[0, 1]) / b_diag_diff)
-                 if abs(b_diag_diff) > 1e-12 else 0.0)
-
-        S = np.array([
-            [cos(sword), -sin(sword), 0.0],
-            [sin(sword),  cos(sword), 0.0],
-            [0.0,         0.0,        1.0],
-        ])
-
-        G = H @ S
-        V = G.T @ (T / count) @ G
-        Q = V[0, 0] - V[1, 1]
-        R = r
-
-        # --- Leong & Carlile (1998) moment estimator for κ and β ---
-        denom1 = 2 - 2 * R - Q
-        denom2 = 2 - 2 * R + Q
-        kappa_raw = (
-            (1 / denom1 if abs(denom1) > 1e-12 else float('inf')) +
-            (1 / denom2 if abs(denom2) > 1e-12 else float('inf'))
-        )
-        beta_raw = 0.5 * (
-            (1 / denom1 if abs(denom1) > 1e-12 else float('inf')) -
-            (1 / denom2 if abs(denom2) > 1e-12 else float('inf'))
-        )
-
-        # Enforce Kent validity constraints: κ > 0, 0 ≤ 2β < κ
-        kappa = max(1e-6, kappa_raw)
-        beta  = max(0.0, min(beta_raw, kappa / 2.0 - 1e-9))
-        return (count, kappa, beta)
+    @staticmethod
+    def _fmt_kent(value):
+        """Kent parameter for a CSV field: 2 decimals, or -998 when undefined."""
+        return f"{value:.2f}" if np.isfinite(value) else "-998"
 
     # =========================================================================
     # METHOD 1: DECIMATION
@@ -385,7 +374,9 @@ class SubsamplingEngine:
 
         Returns
         -------
-        Filename stem (str) of the CSV written to ``path_out``.  Pass this to
+        Filename stem (str) of the CSV written to ``path_out``.  Columns:
+        EASTING, NORTHING, DIP, DIP_DIR and ``count`` (the number of
+        measurements averaged in the cell).  Pass this to
         :func:`save_grid_to_shapefile` to produce a point shapefile.
         """
         df = self._add_direction_cosines(gpdataframe)
@@ -399,7 +390,7 @@ class SubsamplingEngine:
         df['_cy'] = ((df[self.northing] - miny) / n).astype(np.int64)
 
         file = f"structure_file_gridcell_{n}"
-        fieldnames = ['EASTING', 'NORTHING', 'DIP', 'DIP_DIR']
+        fieldnames = ['EASTING', 'NORTHING', 'DIP', 'DIP_DIR', 'count']
 
         with open(os.path.join(path_out, file + ".csv"), "w",
                   encoding="utf-8") as out:
@@ -415,8 +406,26 @@ class SubsamplingEngine:
                 dipdir_str = ('NaN' if math.isnan(dipdir_val)
                               else str(int(dipdir_val)))
                 out.write(f"{centx:.8f},{centy:.8f},"
-                          f"{dip_str},{dipdir_str}\n")
+                          f"{dip_str},{dipdir_str},{len(group)}\n")
         return file
+
+    def count_cells(self, gpdataframe, minx, maxx, miny, maxy, n, min_points=1):
+        """
+        Number of grid cells (same grid as the grid-cell methods) holding at least
+        ``min_points`` measurements - a fast stand-in for running a grid method
+        just to count its output (used by the auto-fit to N points search).
+
+        ``min_points=1`` gives the number of output points of the Kent and Kent
+        Outlier methods (without a kappa filter); ``min_points=4`` that of
+        :meth:`outlier_carmichael`, which skips cells of 3 or fewer.
+        """
+        e = np.asarray(gpdataframe[self.easting], dtype=float)
+        nn = np.asarray(gpdataframe[self.northing], dtype=float)
+        keep = (e >= minx) & (e < maxx) & (nn >= miny) & (nn < maxy)
+        cx = ((e[keep] - minx) / n).astype(np.int64)
+        cy = ((nn[keep] - miny) / n).astype(np.int64)
+        _, sizes = np.unique(np.stack([cx, cy], axis=1), axis=0, return_counts=True)
+        return int((sizes >= min_points).sum())
 
     # =========================================================================
     # METHOD 4: SPHERICAL STATISTICS (KENT DISTRIBUTION)
@@ -424,17 +433,31 @@ class SubsamplingEngine:
     # =========================================================================
 
     def spherical_kent(self, gpdataframe, minx, maxx, miny, maxy,
-                       n=1000, path_out='outputs/'):
+                       n=1000, kappa_min=None, path_out='outputs/'):
         """
-        Compute Kent distribution statistics (mean orientation, κ, β) per cell.
+        Spherical statistics per grid cell: Kent mean orientation, kappa and beta,
+        with an optional kappa filter.
 
-        In addition to the mean orientation provided by :meth:`gridcell_average`,
-        this method estimates the Kent distribution parameters:
+        The study area is divided into n x n metre cells (the same grid as
+        :meth:`gridcell_average`).  For each non-empty cell the representative
+        orientation is the Kent mean direction (the normalised vector mean, so
+        the orientations equal those of :meth:`gridcell_average`), written at
+        the mean position of the cell's measurements together with the number
+        of measurements and the Kent moment estimates of kappa (concentration)
+        and beta (ovalness), see :meth:`_calc_kent`.
 
-        - **kappa (κ)**: concentration — larger values = tighter clustering.
-        - **beta (β)**:  ovalness — zero means rotationally symmetric.
+        Two variants:
 
-        Empty cells are omitted from the output.
+        * ``kappa_min=None`` (spherical statistics **without** kappa filter):
+          every non-empty cell is retained; kappa and beta are reported but do
+          not change the output orientations.
+        * ``kappa_min=k`` (spherical statistics **with** kappa filter): only
+          cells whose kappa is finite and >= k are retained, i.e. cells with a
+          statistically concentrated mean.  Cells with a single measurement
+          (kappa undefined) and dispersed or girdle-shaped cells are dropped.
+
+        Undefined kappa or beta (one measurement, identical measurements) are
+        written as -998.
 
         Parameters
         ----------
@@ -442,14 +465,19 @@ class SubsamplingEngine:
         minx, maxx  : Western and eastern study-area boundaries (metres).
         miny, maxy  : Southern and northern study-area boundaries (metres).
         n           : Grid cell size in metres.  Default: 1000 m.
+        kappa_min   : None (no filter, default) or the minimum Kent kappa a
+                      cell must reach to be retained.
         path_out    : Output directory path.
 
         Returns
         -------
-        Filename stem (str) of the CSV written to ``path_out``.
+        Filename stem (str) of the CSV written to ``path_out``:
+        ``structure_file_spherical_{n}`` without filter,
+        ``structure_file_spherical_kappa{kappa_min}_{n}`` with filter.
         """
         df = self._add_direction_cosines(gpdataframe)
 
+        # Bin each point directly to its cell - O(n_points), not O(n_cells x n_points)
         df = df[
             (df[self.easting]  >= minx) & (df[self.easting]  < maxx) &
             (df[self.northing] >= miny) & (df[self.northing] < maxy)
@@ -457,7 +485,8 @@ class SubsamplingEngine:
         df['_cx'] = ((df[self.easting]  - minx) / n).astype(np.int64)
         df['_cy'] = ((df[self.northing] - miny) / n).astype(np.int64)
 
-        file = f"structure_file_spherical_{n}"
+        file = (f"structure_file_spherical_{n}" if kappa_min is None
+                else f"structure_file_spherical_kappa{kappa_min:g}_{n}")
         fieldnames = ['EASTING', 'NORTHING', 'DIP', 'DIP_DIR',
                       'count', 'kappa', 'beta']
 
@@ -465,22 +494,19 @@ class SubsamplingEngine:
                   encoding="utf-8") as out:
             out.write(','.join(fieldnames) + '\n')
             for (cx, cy), group in df.groupby(['_cx', '_cy']):
+                count, kappa, beta = self._calc_kent(group)
+                if kappa_min is not None and not (
+                        np.isfinite(kappa) and kappa >= kappa_min):
+                    continue
+                dip2, dipdir2 = self._calc_mean_orientation(group)
+                if math.isnan(dip2) or math.isnan(dipdir2):
+                    continue
                 # Mean position of the input points (see gridcell_average)
                 centx = float(group[self.easting].mean())
                 centy = float(group[self.northing].mean())
-                dip2, dipdir2 = self._calc_mean_orientation(group)
-                cnt, kappa, beta = self._calc_kent(group)
-                dip2_str = (
-                    '-999' if (isinstance(dip2, float) and math.isnan(dip2))
-                    else str(int(dip2))
-                )
-                dipdir2_str = (
-                    '-999' if (isinstance(dipdir2, float) and math.isnan(dipdir2))
-                    else str(int(dipdir2))
-                )
                 out.write(f"{centx:.8f},{centy:.8f},"
-                          f"{dip2_str},{dipdir2_str},"
-                          f"{int(cnt)},{kappa},{beta}\n")
+                          f"{int(dip2)},{int(dipdir2)},{int(count)},"
+                          f"{self._fmt_kent(kappa)},{self._fmt_kent(beta)}\n")
         return file
 
     # =========================================================================
@@ -488,30 +514,173 @@ class SubsamplingEngine:
     # Remove the one measurement per cell whose removal most increases kappa.
     # =========================================================================
 
-    def outlier_removal(self, gdf, minx, maxx, miny, maxy,
-                        n=1000, path_out='outputs/'):
+    @staticmethod
+    def _kent_kappa_batch(count, xbar, S):
         """
-        Remove the single greatest outlier per grid cell using the max-Δκ criterion.
+        Kent kappa for a batch of cells, from their sufficient statistics.
 
-        For each grid cell containing more than 3 measurements, every point is
-        tentatively removed in turn.  The point whose removal produces the
-        greatest increase in kappa is identified as the outlier and permanently
-        excluded.  Cells with ≤ 3 measurements are excluded from the output.
+        The same estimator as :meth:`_calc_kent`, vectorised so that the kappa
+        of many sub-sets can be computed in one go (used for leave-one-out).
 
         Parameters
         ----------
-        gdf         : Input GeoDataFrame of structural measurements.
-        minx, maxx  : Western and eastern study-area boundaries (metres).
-        miny, maxy  : Southern and northern study-area boundaries (metres).
-        n           : Grid cell size in metres.  Default: 1000 m.
-        path_out    : Output directory path.
+        count : number of measurements in each set (int, or array of shape (m,)).
+        xbar  : mean direction cosines of each set, shape (m, 3).
+        S     : scatter matrix (sum of x x^T) / count of each set, shape (m, 3, 3).
 
         Returns
         -------
-        Filename stem (str) of the cleaned CSV written to ``path_out``.
+        Array (m,) of kappa; ``inf`` where undefined for a finite reason
+        (fewer than 2 measurements, identical measurements, or a non-positive
+        denominator) and ``nan`` where the resultant vector cancels - exactly the
+        conventions of :meth:`_calc_kent`.
+        """
+        m = xbar.shape[0]
+        count = np.broadcast_to(np.asarray(count), (m,))
+        r1 = np.sqrt((xbar ** 2).sum(axis=1))
+        kappa = np.full(m, np.inf)
+        kappa[(r1 < 1e-12) & (count >= 2)] = np.nan
+        ok = (count >= 2) & (r1 < 1 - 1e-12) & (r1 >= 1e-12)
+        if not ok.any():
+            return kappa
+        xb, S_, r = xbar[ok], S[ok], r1[ok]
+        g = xb / r[:, None]
+        theta = np.arccos(np.clip(g[:, 2], -1.0, 1.0))
+        phi = np.arctan2(g[:, 1], g[:, 0])
+        ct, st, cp, sp = np.cos(theta), np.sin(theta), np.cos(phi), np.sin(phi)
+        z = np.zeros_like(ct)
+        H = np.stack([np.stack([ct * cp, -sp, st * cp], axis=1),
+                      np.stack([ct * sp,  cp, st * sp], axis=1),
+                      np.stack([-st,       z, ct], axis=1)], axis=1)
+        B = np.einsum('mji,mjk,mkl->mil', H, S_, H)            # H^T S H
+        psi = 0.5 * np.arctan2(2 * B[:, 0, 1], B[:, 0, 0] - B[:, 1, 1])
+        cs, sn, one = np.cos(psi), np.sin(psi), np.ones_like(psi)
+        zz = np.zeros_like(psi)
+        K = np.stack([np.stack([cs, -sn, zz], axis=1),
+                      np.stack([sn,  cs, zz], axis=1),
+                      np.stack([zz,  zz, one], axis=1)], axis=1)
+        G = H @ K
+        V = np.einsum('mji,mjk,mkl->mil', G, S_, G)            # G^T S G
+        r2 = V[:, 0, 0] - V[:, 1, 1]
+        d1 = 2 - 2 * r - r2
+        d2 = 2 - 2 * r + r2
+        good = (d1 > 0) & (d2 > 0)
+        k = np.full(len(r), np.inf)
+        k[good] = 1 / d1[good] + 1 / d2[good]
+        kappa[ok] = k
+        return kappa
+
+    def _loo_kappas(self, X):
+        """Kent kappa of the cell with each measurement left out in turn (X: (n, 3))."""
+        n = len(X)
+        total = X.sum(axis=0)
+        T = X.T @ X
+        xbar = (total - X) / (n - 1)
+        S = (T[None, :, :] - X[:, :, None] * X[:, None, :]) / (n - 1)
+        return self._kent_kappa_batch(n - 1, xbar, S)
+
+    def _iterative_outliers(self, grid, min_keep, break_ratio):
+        """
+        Outliers of one cell by repeated leave-one-out removal with a break rule.
+
+        Points are removed one at a time, each time the one whose removal gives
+        the highest Kent kappa, up to half the cell and never below ``min_keep``
+        points after the first removal.  The relative kappa gain of each removal
+        is recorded.  Just stopping once a removal no longer raises kappa does
+        not work, because removing any point from a small sample usually raises
+        kappa a little (30-70% for 8-15 points): in a clean cell that would trim
+        half of it.  Real outliers instead show up as one large jump, so the
+        sequence is cut at its largest gain (as in :meth:`outlier_carmichael`),
+        and only if that gain is at least ``break_ratio`` times the median gain
+        of the other steps; otherwise nothing is removed.
+
+        Returns the list of index labels to remove (possibly empty).
+        """
+        # Work on plain arrays: all leave-one-out kappas of a set are computed at once
+        X = np.array(grid['vector'].tolist(), dtype=float)
+        labels = list(grid.index)
+        active = np.arange(len(X))
+        k_prev = float(self._kent_kappa_batch(
+            len(X), X.mean(axis=0)[None, :], (X.T @ X / len(X))[None, :, :])[0])
+        seq = []                                # (index label removed, relative kappa gain)
+        max_remove = len(grid) // 2
+        while len(seq) < max_remove and np.isfinite(k_prev) and k_prev > 0:
+            if seq and len(active) <= min_keep:
+                break
+            kap = self._loo_kappas(X[active])
+            kap = np.where(np.isfinite(kap), kap, -np.inf)
+            j = int(np.argmax(kap))
+            if not np.isfinite(kap[j]):
+                break                           # kappa undefined for everything left
+            seq.append((labels[active[j]], (kap[j] - k_prev) / k_prev))
+            k_prev = float(kap[j])
+            active = np.delete(active, j)
+        if not seq:
+            return []
+        gains = [g for _, g in seq]
+        best_i = int(np.argmax(gains))
+        if gains[best_i] <= 0:
+            return []
+        others = gains[:best_i] + gains[best_i + 1:]
+        if others and gains[best_i] < break_ratio * max(float(np.median(others)), 0.05):
+            return []                           # no jump stands out from the noise
+        return [idx for idx, _ in seq[:best_i + 1]]
+
+    def outlier_removal(self, gdf, minx, maxx, miny, maxy,
+                        n=1000, min_for_outlier=3, path_out='outputs/',
+                        iterative=False, break_ratio=5.0):
+        """
+        Remove outliers per grid cell using the max-delta-kappa criterion: at
+        most one by default, or several with ``iterative=True``.
+
+        Same grid as :meth:`gridcell_average`.  For each cell with at least
+        ``min_for_outlier`` measurements, the Kent kappa of the cell is
+        computed, then each measurement is left out in turn and
+        ``delta_kappa = kappa(without it) - kappa(all)`` recorded.  The
+        measurement with the largest delta_kappa is the outlier and is removed,
+        provided its removal increases kappa (delta_kappa > 0); otherwise
+        nothing is removed.  The representative orientation is the vector mean
+        of the remaining measurements, at their mean position.
+
+        Cells with one measurement keep it; cells with two are averaged, since
+        removing either leaves a single measurement whose kappa is undefined,
+        so delta_kappa cannot tell the two apart.
+
+        The single-removal rule is a deliberate simplification of the iterative
+        method of Carmichael & Ailleres (2016), which is available as
+        :meth:`outlier_carmichael`.  With ``iterative=True`` the leave-one-out
+        step is repeated to remove several outliers: points are taken out in
+        order of their effect on kappa and the sequence is cut at its largest
+        kappa jump, provided that jump stands out (see
+        :meth:`_iterative_outliers`).  This differs from
+        :meth:`outlier_carmichael`, which ranks points by angle from the cell
+        mean rather than by their effect on kappa, and has no check that the
+        jump stands out.
+
+        Parameters
+        ----------
+        gdf             : Input GeoDataFrame of structural measurements.
+        minx, maxx      : Western and eastern study-area boundaries (metres).
+        miny, maxy      : Southern and northern study-area boundaries (metres).
+        n               : Grid cell size in metres.  Default: 1000 m.
+        min_for_outlier : Minimum measurements in a cell for outlier removal.
+                          Default: 3.
+        path_out        : Output directory path.
+        iterative       : Remove several outliers (see above).  Default: False.
+        break_ratio     : With ``iterative``, the largest kappa jump must be at
+                          least this many times the median of the other steps
+                          to count as an outlier boundary.  Default: 5.
+
+        Returns
+        -------
+        Filename stem (str) of the CSV written to ``path_out``.  Columns:
+        EASTING, NORTHING, DIP, DIP_DIR, count (measurements kept), kappa and
+        beta of the kept measurements (-998 if undefined), REMOVED_INDEX
+        (index of the first removed measurement, -1 if none) and n_removed.
         """
         df = self._add_direction_cosines(gdf)
 
+        # Bin each point directly to its cell - O(n_points), not O(n_cells x n_points)
         df = df[
             (df[self.easting]  >= minx) & (df[self.easting]  < maxx) &
             (df[self.northing] >= miny) & (df[self.northing] < maxy)
@@ -519,37 +688,46 @@ class SubsamplingEngine:
         df['_cx'] = ((df[self.easting]  - minx) / n).astype(np.int64)
         df['_cy'] = ((df[self.northing] - miny) / n).astype(np.int64)
 
-        file     = f"structure_file_outlier_{n}"
+        file     = (f"structure_file_outlier_iterative_{n}" if iterative
+                    else f"structure_file_outlier_{n}")
         csv_path = os.path.join(path_out, f"{file}.csv")
 
         with open(csv_path, "w", encoding="utf-8") as out:
             out.write("EASTING,NORTHING,DIP,DIP_DIR,"
-                      "count,kappa,beta,REMOVED_INDEX\n")
+                      "count,kappa,beta,REMOVED_INDEX,n_removed\n")
 
             for (cx, cy), grid in df.groupby(['_cx', '_cy']):
-                centx = minx + (cx + 0.5) * n
-                centy = miny + (cy + 0.5) * n
+                removed = []
+                final_grid = grid
+                if len(grid) >= min_for_outlier and not iterative:
+                    X = np.array(grid['vector'].tolist(), dtype=float)
+                    k0 = float(self._kent_kappa_batch(
+                        len(X), X.mean(axis=0)[None, :],
+                        (X.T @ X / len(X))[None, :, :])[0])
+                    if np.isfinite(k0):
+                        deltas = self._loo_kappas(X) - k0       # all leave-one-out at once
+                        deltas = np.where(np.isnan(deltas), -np.inf, deltas)
+                        j = int(np.argmax(deltas))
+                        if deltas[j] > 0:
+                            removed = [grid.index[j]]
+                            final_grid = grid.drop(index=grid.index[j])
+                elif len(grid) >= min_for_outlier:
+                    removed = self._iterative_outliers(grid, min_for_outlier, break_ratio)
+                    final_grid = grid.drop(index=removed) if removed else grid
+                removed_idx = removed[0] if removed else None
 
-                if len(grid) <= 3:
-                    continue  # skip cells too small for outlier removal
-
-                _, k0, _ = self._calc_kent(grid)
-
-                delta_kappas = []
-                for idx in grid.index:
-                    temp = grid.drop(index=idx)
-                    _, k_t, _ = self._calc_kent(temp)
-                    delta_kappas.append((idx, k_t - k0))
-
-                removed_idx, _ = max(delta_kappas, key=lambda x: x[1])
-                final_grid = grid.drop(index=removed_idx)
+                dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
+                if math.isnan(dip_f) or math.isnan(dipdir_f):
+                    continue
+                count, kappa, beta = self._calc_kent(final_grid)
                 # Mean position of the retained points, not the cell centre
                 centx = float(final_grid[self.easting].mean())
                 centy = float(final_grid[self.northing].mean())
-                dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
-                cnt, kappa, beta = self._calc_kent(final_grid)
                 out.write(f"{centx:.8f},{centy:.8f},{int(dip_f)},{int(dipdir_f)},"
-                          f"{cnt},{kappa},{beta},{removed_idx}\n")
+                          f"{count},{self._fmt_kent(kappa)},"
+                          f"{self._fmt_kent(beta)},"
+                          f"{-1 if removed_idx is None else removed_idx},"
+                          f"{len(removed)}\n")
 
         return file
 
@@ -562,16 +740,18 @@ class SubsamplingEngine:
                            n=1000, path_out='outputs/'):
         """
         Remove multiple outliers per grid cell using the Carmichael (2016)
-        iterative Δκ-break algorithm.
+        iterative delta-kappa-break algorithm.
 
         For each grid cell, points are ranked by angular distance from the cell
         mean direction (farthest first).  They are then removed iteratively and
-        κ is recomputed after each removal.  The step with the largest increase
-        in κ defines the outlier boundary: every point removed up to and
-        including that step is treated as an outlier.  At most N // 2 points
-        may be removed from any cell of N measurements.
+        kappa is recomputed after each removal.  The step with the largest
+        increase in kappa defines the outlier boundary: every point removed up
+        to and including that step is treated as an outlier.  At most N // 2
+        points may be removed from any cell of N measurements.
 
-        If no removal step produces a positive Δκ, the cell is left unchanged.
+        If no removal step produces a positive delta-kappa, the cell is left
+        unchanged.  Cells with 3 or fewer measurements are excluded.  Each
+        output point is at the mean position of the retained measurements.
 
         Parameters
         ----------
@@ -583,14 +763,27 @@ class SubsamplingEngine:
 
         Returns
         -------
-        Filename stem (str) of the cleaned CSV written to ``path_out``.
+        Filename stem (str) of the CSV written to ``path_out``.  Columns:
+        EASTING, NORTHING, DIP, DIP_DIR, count (measurements kept), kappa and
+        beta of the kept measurements (-998 if undefined), n_removed.
+
+        References
+        ----------
+        Carmichael, T. & Ailleres, L. (2016). Method and analysis for the
+        upscaling of structural data. Journal of Structural Geology, 83, 121-133.
         """
         df = self._add_direction_cosines(gdf)
+
+        # Bin each point directly to its cell - O(n_points), not O(n_cells x n_points)
+        df = df[
+            (df[self.easting]  >= minx) & (df[self.easting]  < maxx) &
+            (df[self.northing] >= miny) & (df[self.northing] < maxy)
+        ].copy()
+        df['_cx'] = ((df[self.easting]  - minx) / n).astype(np.int64)
+        df['_cy'] = ((df[self.northing] - miny) / n).astype(np.int64)
         df[['dc_l', 'dc_m', 'dc_n']] = pd.DataFrame(
             df['vector'].tolist(), index=df.index)
 
-        x_coords = np.arange(minx, maxx, n)
-        y_coords = np.arange(miny, maxy, n)
         file     = f"structure_file_outlier_carmichael_{n}"
         csv_path = os.path.join(path_out, f"{file}.csv")
 
@@ -598,91 +791,72 @@ class SubsamplingEngine:
             out.write("EASTING,NORTHING,DIP,DIP_DIR,"
                       "count,kappa,beta,n_removed\n")
 
-            for linex in x_coords:
-                for liney in y_coords:
-                    grid = df[
-                        (df[self.northing] >= liney) &
-                        (df[self.northing] <= liney + n) &
-                        (df[self.easting]  >= linex) &
-                        (df[self.easting]  <= linex + n)
-                    ]
-                    centx = linex + n / 2
-                    centy = liney + n / 2
-                    N = len(grid)
+            for (cx, cy), grid in df.groupby(['_cx', '_cy']):
+                N = len(grid)
+                if N <= 3:
+                    continue            # too few measurements to define an outlier
 
-                    if N <= 3:
-                        out.write(f"{centx:.8f},{centy:.8f},-999,-999,"
-                                  f"{N},-999,-999,-1\n")
-                        continue
+                # Cell mean direction as a unit vector
+                l_s = float(grid['dc_l'].sum())
+                m_s = float(grid['dc_m'].sum())
+                n_s = float(grid['dc_n'].sum())
+                g_len = sqrt(l_s**2 + m_s**2 + n_s**2)
+                if g_len < 1e-12:
+                    continue            # antipodal vectors cancel: no mean direction
+                mean_vec = np.array([l_s / g_len, m_s / g_len, n_s / g_len])
 
-                    # Compute cell mean direction as a unit vector
-                    l_s = float(grid['dc_l'].sum())
-                    m_s = float(grid['dc_m'].sum())
-                    n_s = float(grid['dc_n'].sum())
-                    g_len = sqrt(l_s**2 + m_s**2 + n_s**2)
-                    if g_len < 1e-12:
-                        out.write(f"{centx:.8f},{centy:.8f},-999,-999,"
-                                  f"{N},-999,-999,-1\n")
-                        continue
-                    mean_vec = np.array([l_s / g_len, m_s / g_len,
-                                         n_s / g_len])
+                # Rank points by angular distance from the mean (farthest first)
+                vecs = grid[['dc_l', 'dc_m', 'dc_n']].values.astype(float)
+                dots = np.clip(vecs @ mean_vec, -1.0, 1.0)
+                ang_dists = np.degrees(np.arccos(dots))
+                ranked_indices = list(grid.index[np.argsort(ang_dists)[::-1]])
 
-                    # Rank points by angular distance from mean (farthest first)
-                    vecs = grid[['dc_l', 'dc_m', 'dc_n']].values.astype(float)
-                    dots = np.clip(vecs @ mean_vec, -1.0, 1.0)
-                    ang_dists = np.degrees(np.arccos(dots))
-                    ranked_indices = list(
-                        grid.index[np.argsort(ang_dists)[::-1]])
+                # Build the kappa sequence: remove one point at a time
+                _, k_prev, _ = self._calc_kent(grid)
+                max_remove = N // 2
+                delta_seq  = []
+                remaining  = list(grid.index)
 
-                    # Build κ sequence: remove one point at a time
-                    _, k_prev, _ = self._calc_kent(grid)
-                    max_remove = N // 2
-                    delta_seq  = []
-                    remaining  = list(grid.index)
+                for i in range(max_remove):
+                    remaining.remove(ranked_indices[i])
+                    temp = grid.loc[remaining]
+                    _, k_t, _ = self._calc_kent(temp)
+                    # kappa is undefined (inf/nan) for one or identical
+                    # measurements: such steps cannot define the break
+                    delta_seq.append(k_t - k_prev
+                                     if np.isfinite(k_t) and np.isfinite(k_prev)
+                                     else float('nan'))
+                    k_prev = k_t
 
-                    for i in range(max_remove):
-                        remaining.remove(ranked_indices[i])
-                        temp = grid.loc[remaining]
-                        _, k_t, _ = self._calc_kent(temp)
-                        delta_seq.append(k_t - k_prev)
-                        k_prev = k_t
-
-                    # Find the Δκ break
-                    best_i     = int(np.argmax(delta_seq))
+                # Find the delta-kappa break (finite steps only)
+                if np.all(np.isnan(delta_seq)):
+                    best_i, best_delta = 0, 0.0
+                else:
+                    best_i     = int(np.nanargmax(delta_seq))
                     best_delta = delta_seq[best_i]
 
-                    if best_delta <= 0:
-                        # No removal helps — retain all points
-                        n_removed  = 0
-                        final_grid = grid
-                    else:
-                        n_removed   = best_i + 1
-                        outlier_set = set(ranked_indices[:n_removed])
-                        kept        = [idx for idx in grid.index
-                                       if idx not in outlier_set]
-                        final_grid  = grid.loc[kept]
+                if best_delta <= 0:
+                    # No removal improves concentration - retain all points
+                    n_removed  = 0
+                    final_grid = grid
+                else:
+                    n_removed   = best_i + 1
+                    outlier_set = set(ranked_indices[:n_removed])
+                    kept        = [idx for idx in grid.index
+                                   if idx not in outlier_set]
+                    final_grid  = grid.loc[kept]
 
-                    # Mean position of the retained points, not the cell centre
-                    centx = float(final_grid[self.easting].mean())
-                    centy = float(final_grid[self.northing].mean())
-                    dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
-                    if math.isnan(dip_f) or math.isnan(dipdir_f):
-                        out.write(f"{centx:.8f},{centy:.8f},-999,-999,"
-                                  f"{N - n_removed},-999,-999,{n_removed}\n")
-                        continue
-                    count, kappa_f, beta_f = self._calc_kent(final_grid)
-                    out.write(f"{centx:.8f},{centy:.8f},{int(dip_f)},{int(dipdir_f)},"
-                              f"{count},{kappa_f},{beta_f},{n_removed}\n")
+                dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
+                if math.isnan(dip_f) or math.isnan(dipdir_f):
+                    continue
+                count, kappa_f, beta_f = self._calc_kent(final_grid)
+                # Mean position of the retained points, not the cell centre
+                centx = float(final_grid[self.easting].mean())
+                centy = float(final_grid[self.northing].mean())
+                out.write(f"{centx:.8f},{centy:.8f},{int(dip_f)},{int(dipdir_f)},"
+                          f"{count},{self._fmt_kent(kappa_f)},"
+                          f"{self._fmt_kent(beta_f)},{n_removed}\n")
 
-        # Strip sentinel rows
-        df_clean = pd.read_csv(csv_path)
-        df_clean = df_clean[~(
-            (df_clean['DIP']   == -999) &
-            (df_clean['DIP_DIR'] == -999) &
-            (np.isclose(df_clean['kappa'].astype(float), -999)) &
-            (np.isclose(df_clean['beta'].astype(float),  -999))
-        )]
-        df_clean.to_csv(csv_path, index=False)
         return file
 
     # =========================================================================
@@ -864,12 +1038,14 @@ class SubsamplingEngine:
         if method == 'spherical_kent':
             return self.spherical_kent(
                 gpdataframe, minx, maxx, miny, maxy,
-                n=grid_n, path_out=path_out)
+                n=grid_n, kappa_min=kwargs.get('kappa_min'), path_out=path_out)
 
         if method == 'outlier_removal':
             return self.outlier_removal(
                 gpdataframe, minx, maxx, miny, maxy,
-                n=grid_n, path_out=path_out)
+                n=grid_n, min_for_outlier=kwargs.get('min_for_outlier', 3),
+                path_out=path_out, iterative=kwargs.get('iterative', False),
+                break_ratio=kwargs.get('break_ratio', 5.0))
 
         if method == 'outlier_carmichael':
             return self.outlier_carmichael(
@@ -890,6 +1066,25 @@ class SubsamplingEngine:
 # STANDALONE CONVERSION HELPERS
 # Pure-math functions with no dependency on engine state.
 # =============================================================================
+
+def dip_field_problem(values, dip_col='dip'):
+    """
+    Sanity-check a field chosen as *dip*: dip must lie between 0 and 90 degrees.
+
+    Returns a message describing the problem, or ``None`` if the values are
+    plausible.  A dip field holding values above 90 almost always means the dip
+    and dip direction / strike fields have been swapped, which otherwise gives
+    plausible-looking but wrong output (the averaging treats e.g. a "dip" of 335
+    as a 25 degree dip in the opposite direction).
+    """
+    v = pd.to_numeric(pd.Series(values), errors='coerce').dropna()
+    n_bad = int(((v > 90) | (v < 0)).sum())
+    if not n_bad:
+        return None
+    return (f"Dip field '{dip_col}' has {n_bad} of {len(v)} values outside 0-90 degrees "
+            f"(range {v.min():g} to {v.max():g}). Are the Dip and Dip Direction/Strike "
+            f"fields swapped?")
+
 
 def strike_to_dipdir(gpdataframe, strike):
     """

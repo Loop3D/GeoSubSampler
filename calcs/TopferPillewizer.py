@@ -88,13 +88,21 @@ def scale_iterations(target_ratio, increment):
 # ---------------------------------------------------------------------------
 
 def _count_grid(engine, method, gdf, min_x, max_x, min_y, max_y, gs):
-    """Run grid engine method at cell size gs, return number of valid output cells."""
+    """Return the number of output cells of a grid engine method at cell size gs."""
+    # The output cell count does not depend on the outlier removal, so count the cells
+    # directly rather than running the method (which can be slow) at every trial size.
+    if method in ('spherical_kent', 'outlier_removal') and hasattr(engine, 'count_cells'):
+        return engine.count_cells(gdf, min_x, max_x, min_y, max_y, gs, min_points=1)
+    if method == 'outlier_carmichael' and hasattr(engine, 'count_cells'):
+        return engine.count_cells(gdf, min_x, max_x, min_y, max_y, gs, min_points=4)
     tmpdir = tempfile.mkdtemp()
     try:
         if method == 'gridcell_average':
             stem = engine.gridcell_average(gdf, min_x, max_x, min_y, max_y, n=gs, path_out=tmpdir)
         elif method == 'spherical_kent':
             stem = engine.spherical_kent(gdf, min_x, max_x, min_y, max_y, n=gs, path_out=tmpdir)
+        elif method == 'outlier_carmichael':
+            stem = engine.outlier_carmichael(gdf, min_x, max_x, min_y, max_y, n=gs, path_out=tmpdir)
         else:
             stem = engine.outlier_removal(gdf, min_x, max_x, min_y, max_y, n=gs, path_out=tmpdir)
         df = pd.read_csv(os.path.join(tmpdir, stem + '.csv'))
@@ -244,6 +252,9 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
         elif method == 'spherical_kent':
             stem = engine.spherical_kent(gdf, min_x, max_x, min_y, max_y,
                                          n=gs_best, path_out=tmpdir)
+        elif method == 'outlier_carmichael':
+            stem = engine.outlier_carmichael(gdf, min_x, max_x, min_y, max_y,
+                                             n=gs_best, path_out=tmpdir)
         else:
             stem = engine.outlier_removal(gdf, min_x, max_x, min_y, max_y,
                                           n=gs_best, path_out=tmpdir)

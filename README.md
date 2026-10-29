@@ -68,7 +68,8 @@ The tool runs the script `ARCGIS/setup_arcgispro_env.py`, which can also be run 
 - **Layer Selection**: Choose the point layer containing structural measurements
 - **Dip Field**: Field containing dip angle values
   - *Type*: Numeric field from selected layer
-  - *Description*: Angle of dip from horizontal (0-90°)
+  - *Description*: Angle of dip from horizontal (0-90°). If this field holds values outside 0-90° the
+    tools stop with a message, because the Dip and Dip Direction/Strike fields have most likely been swapped
 - **Dip Direction/Strike Field**: Field containing directional information
   - *Type*: Numeric field from selected layer
   - *Description*: Either dip direction (0-360°) or strike direction
@@ -89,23 +90,22 @@ Randomly samples a percentage of orientation points.
   - *Range*: 0.0 - 100.0
   - *Description*: Controls what fraction of the original dataset is retained
 
-#### Grid Cell Averaging
-Divides the area into grid cells and averages orientations within each cell.
-
-**Parameters:**
-- **Grid Size**: Size of grid cells for averaging
-  - *Type*: Float
-  - *Units*: Layer units (meters for projected, degrees for geographic)
-  - *Description*: Larger values create coarser grids with more averaging
-
 #### Kent Statistics Grid Averaging
-Uses Kent distribution statistics for spherical averaging of orientations within grid cells.
+Averages the orientations within each grid cell (the normalised vector mean) and reports Kent distribution
+statistics for the cell. Each output point sits at the mean position of the cell's measurements and carries
+`count`, `kappa` (concentration) and `beta` (ovalness) attributes. (A plain grid-cell average is the same
+calculation without kappa and beta, so it is no longer offered separately.)
 
 **Parameters:**
 - **Grid Size (Kent)**: Grid cell size for Kent statistical averaging
   - *Type*: Float
   - *Units*: Layer units
   - *Description*: Grid size for applying Kent distribution statistics
+- **Min kappa** (optional): Keep a cell only if its Kent kappa (concentration) is at least this value
+  - *Type*: Float; leave blank (or 0) for no filter
+  - *Description*: Drops cells with a single measurement and cells whose orientations are scattered
+    (the thesis models used 5). Cells that survive carry `count`, `kappa` and `beta` attributes
+    (-998 where undefined). Not applied by the Töpfer & Pillewizer tool.
 
 #### Kent Statistics with Outlier Removal
 Applies Kent statistics while removing the largest outliers within each grid cell.
@@ -117,6 +117,21 @@ Applies Kent statistics while removing the largest outliers within each grid cel
 - **Outlier Threshold**: Threshold for outlier identification and removal
   - *Type*: Float
   - *Description*: Statistical threshold for identifying and removing outliers
+- **Iterative** (experimental): Remove several outliers per cell instead of one. Points are taken out in order of
+  how much their removal raises Kent kappa (up to half the cell) and the sequence is cut at its largest kappa
+  jump, but only if that jump is at least 5 times the typical step; otherwise nothing is removed (removing any
+  point from a small sample raises kappa a little, so a plain "stop when kappa stops rising" rule over-trims).
+  This differs from the Carmichael method below, which orders points by angle from the cell mean.
+
+#### Carmichael Iterative Outlier Removal
+Kent averaging that can remove **several** outliers per grid cell (Carmichael & Ailleres, 2016), where
+Kent Outlier removes at most one. In each cell the measurements are ranked by angle from the cell's mean
+direction (farthest first) and removed one at a time while Kent kappa is recomputed; everything removed up
+to the biggest jump in kappa is treated as outliers (at most half the cell). Cells with 3 or fewer
+measurements are skipped. Output points carry `count`, `kappa`, `beta` and `n_removed` attributes.
+
+**Parameters:**
+- **Grid Size (Carmichael)**: Grid cell size, in layer units. "Auto-fit to N pts" works as for the other grid methods.
 
 #### First Order Subsampling
 Retains orientation points based on proximity to geological contacts and angular relationships.

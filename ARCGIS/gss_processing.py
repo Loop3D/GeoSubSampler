@@ -34,7 +34,8 @@ from calcs.FaultLengths import FaultLengths
 from calcs.FaultsGraph import FaultsGraph
 from calcs.FaultStratOffset import FaultStratOffset
 from calcs.FaultClusterOrientation import FaultsOrientations
-from calcs.FirstOrderOrientation import SubsamplingEngine, save_grid_to_shapefile
+from calcs.FirstOrderOrientation import (SubsamplingEngine, save_grid_to_shapefile,
+                                         dip_field_problem)
 from calcs.TopferPillewizer import (dipdir_to_strike, topfer_count, scale_iterations,
                                     scale_points_tp, scale_lines_tp, scale_polygons_tp)
 from calcs.PolygonSimplification import vector_simplify_file_two_stage
@@ -227,9 +228,11 @@ class GSSProcessor:
         if rec is None:
             raise GSSError("Select a points layer first.")
         gdf = gpd.read_file(self.resolved_source(rec))
+        fields_selected = True
         if (not dip_col or not dipdir_col):
             if check_fields:
                 raise GSSError("Please define dip & dip dir/strike fields before continuing.")
+            fields_selected = False
             dip_col, dipdir_col = gdf.columns[1], gdf.columns[2]
         else:
             dip_col = self.resolved_field(rec, dip_col)
@@ -238,6 +241,10 @@ class GSSProcessor:
         missing = [c for c in (dip_col, dipdir_col) if c not in gdf.columns]
         if missing:
             raise GSSError(f"field(s) {missing} not found. Available columns: {list(gdf.columns)}")
+        if fields_selected:
+            problem = dip_field_problem(gdf[dip_col], dip_col)
+            if problem:
+                raise GSSError(problem + " Nothing was processed.")
 
         gdf = gdf.copy()
         gdf['EASTING'] = gdf.geometry.x
@@ -309,14 +316,21 @@ class GSSProcessor:
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    def _find_grid_size_for_target(self, run_fn, gdf, bounds, target_n):
-        """Cell size giving ~target_n points (within 15%): estimate, correct, then bisect."""
+    def _find_grid_size_for_target(self, run_fn, gdf, bounds, target_n, count_fn=None):
+        """
+        Cell size giving ~target_n points (within 15%): estimate, correct, then bisect.
+        count_fn(cell_size) -> number of output points, if available without running the
+        method (e.g. engine.count_cells); otherwise run_fn is run at every trial size.
+        """
         min_x, max_x, min_y, max_y = bounds
         area = (max_x - min_x) * (max_y - min_y)
         tol = 0.15
 
         def count(cs):
-            n = self._count_gridcell_output(run_fn, gdf, bounds, cs)
+            if count_fn is not None:
+                n = count_fn(cs)
+            else:
+                n = self._count_gridcell_output(run_fn, gdf, bounds, cs)
             self.log(f"  [target N] cell={cs:.2f} -> {n} points")
             return n
 
@@ -360,21 +374,48 @@ class GSSProcessor:
                 hi = mid
         return best_cs, best_n
 
-    def grid_method(self, kind, rec, dip, dipdir, is_dipdir, grid_size, target_n=None):
+    def grid_method(self, kind, rec, dip, dipdir, is_dipdir, grid_size, target_n=None,
+                    kappa_min=None, iterative=False):
         """
-        kind: "gridcell_average" | "spherical_kent" | "outlier_removal".
+        kind: "gridcell_average" | "spherical_kent" | "outlier_removal" | "outlier_carmichael".
+        kappa_min (Kent only): keep a cell only if its Kent kappa is at least this; None = all.
+        iterative (Kent Outlier only): keep removing outliers rather than just one per cell.
         Returns the grid size used (layer units / metres as displayed) so the GUI can show it.
         """
         gdf, engine, dip_col, dipdir_col = self._setup_points(rec, dip, dipdir, is_dipdir)
-        run_fn = getattr(engine, kind)
+        if kind != "spherical_kent" or not kappa_min or kappa_min <= 0:
+            kappa_min = None
+        iterative = bool(iterative) and kind == "outlier_removal"
+        if kappa_min is not None:
+            def run_fn(*args, **kwargs):
+                return engine.spherical_kent(*args, kappa_min=kappa_min, **kwargs)
+        elif iterative:
+            def run_fn(*args, **kwargs):
+                return engine.outlier_removal(*args, iterative=True, **kwargs)
+        else:
+            run_fn = getattr(engine, kind)
         label = {"gridcell_average": "gridCellAveraging", "spherical_kent": "grid_cell_kent",
-                 "outlier_removal": "grid_cell_kentOutlier"}[kind]
+                 "outlier_removal": "grid_cell_kentOutlier",
+                 "outlier_carmichael": "grid_cell_carmichael"}[kind]
+        if iterative:
+            label += "Iter"
+        if kappa_min is not None:
+            label += f"_kappa{kappa_min:g}"
         geographic = bool(rec.get("geographic"))
         b = gdf.total_bounds
         bounds = (int(b[0]), int(b[2]) + 1, int(b[1]), int(b[3]) + 1)
 
         if target_n:
-            size, _ = self._find_grid_size_for_target(run_fn, gdf, bounds, target_n)
+            # The cell count does not depend on outlier removal, so count cells directly
+            # instead of running the method at every trial size (not so with a kappa filter,
+            # which drops cells depending on their kappa)
+            count_fn = None
+            if kappa_min is None and kind in ("spherical_kent", "outlier_removal",
+                                              "outlier_carmichael"):
+                min_pts = 4 if kind == "outlier_carmichael" else 1
+                count_fn = lambda cs: engine.count_cells(gdf, *bounds, cs, min_points=min_pts)
+            size, _ = self._find_grid_size_for_target(run_fn, gdf, bounds, target_n,
+                                                      count_fn=count_fn)
             display = size * DEG_PER_M_INV if geographic else size
         else:
             display = float(grid_size)
@@ -386,6 +427,12 @@ class GSSProcessor:
             gdf2 = save_grid_to_shapefile(tmpdir, file)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
+        if gdf2 is None and kappa_min is not None:
+            self.warn(f"Kent: no cell reached Min kappa {kappa_min:g} - nothing written. "
+                      f"Lower Min kappa or enlarge the grid size.")
+        if gdf2 is None and kind == "outlier_carmichael":
+            self.warn("Carmichael: no cell had more than 3 measurements - nothing written. "
+                      "Use a larger grid size.")
         if gdf2 is not None:
             gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
             gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
@@ -408,6 +455,9 @@ class GSSProcessor:
         orient = gpd.read_file(self.resolved_source(point_rec))
         dip_col = self.resolved_field(point_rec, dip)
         dipdir_col = self.resolved_field(point_rec, dipdir)
+        problem = dip_field_problem(orient[dip_col], dip_col)
+        if problem:
+            raise GSSError(problem + " Nothing was processed.")
         eff = dipdir_col
         if not is_dipdir:
             orient['_eff_dipdir'] = (orient[dipdir_col].astype(float) - 90) % 360
@@ -784,7 +834,8 @@ class GSSProcessor:
         if fo_kwargs:
             settings['1o distance limit'] = fo_kwargs['dist_buffer']
             settings['1o angle limit'] = fo_kwargs['angle_tol']
-        elif point_method in ('gridcell_average', 'spherical_kent', 'outlier_removal'):
+        elif point_method in ('gridcell_average', 'spherical_kent', 'outlier_removal',
+                              'outlier_carmichael'):
             settings['grid size starting guess'] = grid_sz
         rows.insert(0, {'step': 'settings', 'OS/TS ratio': '', 'step ratio': '', 'layer': 'all',
                         'method': '', 'input count': '', 'target count (from original)': '',

@@ -242,7 +242,7 @@ class App(tk.Tk):
             "Ticked: the field holds dip direction. Unticked: it holds strike.").pack(side="left")
 
         self.v_method = tk.StringVar(value="stochastic")
-        self.v_percent, self.v_grid, self.v_grid_kent, self.v_grid_ko = (
+        self.v_percent, self.v_grid_kent, self.v_grid_ko, self.v_grid_carm = (
             tk.StringVar(value=v) for v in ("50", "5000", "5000", "5000"))
         self.v_fo_dist, self.v_fo_angle = tk.StringVar(value="1000"), tk.StringVar(value="15")
 
@@ -257,19 +257,24 @@ class App(tk.Tk):
 
         radio(0, "Stochastic", "stochastic", "Keep a randomly selected percentage of points",
               [("Percent kept (%)", self.v_percent)])
-        radio(1, "Grid Cell Avg", "gridcell_average", "Grid cell averaging of points",
-              [("Grid Size (m)", self.v_grid)])
+        self.v_kappa_min = tk.StringVar(value="")
         radio(2, "Kent", "spherical_kent", "Grid cell averaging using Kent statistics",
-              [("Grid Size (m)", self.v_grid_kent)])
+              [("Grid Size (m)", self.v_grid_kent), ("Min kappa", self.v_kappa_min)])
+        self.v_ko_iter = tk.BooleanVar(value=False)
         radio(3, "Kent Outlier", "outlier_removal",
               "Grid cell averaging using Kent statistics, removing the biggest outlier",
               [("Grid Size (m)", self.v_grid_ko)])
+        tk.Checkbutton(f.winfo_children()[-1], text="Iterative", variable=self.v_ko_iter,
+                       bg=BG, font=FONT).pack(side="left", padx=6)
+        radio(4, "Carmichael", "outlier_carmichael",
+              "Grid cell averaging using Kent statistics, removing several outliers per cell",
+              [("Grid Size (m)", self.v_grid_carm)])
 
         tr = tk.Frame(f, bg=BG)
         tr.pack(fill="x", pady=1)
         self.v_target_on, self.v_target_n = tk.BooleanVar(), tk.StringVar(value="100")
         tip(tk.Checkbutton(tr, text="Auto-fit to N pts", variable=self.v_target_on, bg=BG,
-                           font=FONT), "Grid Cell Avg, Kent and Kent Outlier only: search for the "
+                           font=FONT), "Kent, Kent Outlier and Carmichael only: search for the "
             "grid size that gives about N points (within 15%). Slower - several trial runs."
             ).pack(side="left", padx=(20, 4))
         entry(tr, self.v_target_n, 6).pack(side="left")
@@ -403,9 +408,13 @@ class App(tk.Tk):
             str(self.v_dip): "Field containing Dip information",
             str(self.v_dipdir): "Field containing Dip Direction or Strike information",
             str(self.v_percent): "Percentage of points to keep, between 0 and 100",
-            str(self.v_grid): "Grid size in layer units for cell averaging",
             str(self.v_grid_kent): "Grid size in layer units for cell averaging using Kent statistics",
             str(self.v_grid_ko): "Grid size in layer units for Kent outlier averaging",
+            str(self.v_grid_carm): "Grid size in layer units for Carmichael outlier averaging",
+            str(self.v_kappa_min): (
+                "Kent only. Keep a cell only if its Kent kappa (concentration) is at least this "
+                "value.\nDrops cells with a single measurement and cells whose orientations are "
+                "scattered.\nBlank (or 0) keeps every cell. The thesis models used 5."),
             str(self.v_target_n): (
                 "Desired number of output points (used when 'Auto-fit to N pts' is ticked). "
                 "The result is approximate (±15%) and cannot exceed the number of occupied "
@@ -435,12 +444,19 @@ class App(tk.Tk):
         by_text = {                      # buttons / radio buttons / check boxes, keyed by label
             "Dip Direction": "Dip Direction used instead of Strike \nProbably not needed?",
             "Stochastic": "Keep a randomly selected percentage of points",
-            "Grid Cell Avg": "Grid Cell Averaging of points",
-            "Kent": "Grid Cell Averaging of points using Kent statistics",
+            "Kent": ("Grid Cell Averaging of points using Kent statistics.\n"
+                     "Output points sit at the mean position of each cell's measurements, with the\n"
+                     "vector-mean orientation plus count, Kent kappa (concentration) and beta (ovalness)."),
             "Kent Outlier": "Grid Cell Averaging using Kent statistics, removing biggest outlier",
+            "Carmichael": (
+                "Grid Cell Averaging using Kent statistics, removing several outliers per cell\n"
+                "(Carmichael & Ailleres 2016). Points are ranked by angle from the cell mean and\n"
+                "removed one at a time while Kent kappa is recomputed; everything up to the\n"
+                "biggest jump in kappa is treated as outliers. Cells with 3 or fewer points are "
+                "skipped."),
             "Subsample Points": "Run the selected subsampling method on the point layer",
             "Auto-fit to N pts": (
-                "Grid Cell Avg, Kent and Kent Outlier only.\n"
+                "Kent, Kent Outlier and Carmichael only.\n"
                 "Instead of using the Grid Size box, search for the grid cell size that gives "
                 "approximately N output points (within ±15%). The grid size found is written "
                 "back into the Grid Size box of the selected method.\n"
@@ -451,6 +467,12 @@ class App(tk.Tk):
                 "Requires a polygon layer (selected in the map polygons box) that overlaps the "
                 "points - its boundaries are used as the contacts."),
             "Series": "Calculate full series of rescaling maps between increment and threshold",
+            "Iterative": (
+                "Kent Outlier only. Remove several outliers per cell instead of one: points are taken\n"
+                "out in order of how much their removal raises Kent kappa (up to half the cell), and\n"
+                "the sequence is cut at its biggest kappa jump - only if that jump stands out (5x the\n"
+                "typical step), otherwise nothing is removed. Differs from Carmichael, which orders\n"
+                "points by angle from the cell mean. Not applied by the Töpfer & Pillewizer tool."),
             "Rescale Map": "Rescale map polygons",
             "Merge Segments": ("Merge connected polylines\n"
                                "WARNING: VERY SLOW FOR LARGE DATASETS (>1s per object)"),
@@ -655,8 +677,10 @@ class App(tk.Tk):
         if prepare:
             return {"pt": self._point_args(), "poly": self._rec("polygon", self.v_polys),
                     "method": self.v_method.get(),
-                    "percent": self.v_percent.get(), "grid": self.v_grid.get(),
+                    "percent": self.v_percent.get(),
                     "kent": self.v_grid_kent.get(), "ko": self.v_grid_ko.get(),
+                    "carm": self.v_grid_carm.get(), "ko_iter": self.v_ko_iter.get(),
+                    "kappa_min": self.v_kappa_min.get().strip(),
                     "target": self.v_target_n.get() if self.v_target_on.get() else None,
                     "fo_dist": self.v_fo_dist.get(), "fo_angle": self.v_fo_angle.get()} \
                 if self._validate_numbers(self.v_method.get()) else None
@@ -672,24 +696,29 @@ class App(tk.Tk):
         if not dip or not dipdir:
             from gss_processing import GSSError
             raise GSSError("Please define dip & dip dir/strike fields before continuing.")
-        size_var = {"gridcell_average": (self.v_grid, "grid"),
-                    "spherical_kent": (self.v_grid_kent, "kent"),
-                    "outlier_removal": (self.v_grid_ko, "ko")}[m]
+        size_var = {"spherical_kent": (self.v_grid_kent, "kent"),
+                    "outlier_removal": (self.v_grid_ko, "ko"),
+                    "outlier_carmichael": (self.v_grid_carm, "carm")}[m]
         used = proc.grid_method(m, rec, dip, dipdir, is_dd, float(args[size_var[1]]),
-                                target_n=int(args["target"]) if args["target"] else None)
+                                target_n=int(args["target"]) if args["target"] else None,
+                                kappa_min=float(args["kappa_min"]) if args["kappa_min"] else None,
+                                iterative=args["ko_iter"])
         if args["target"]:
             self.queue.put(("set", (size_var[0], f"{used:.0f}"), ""))
 
     def _validate_numbers(self, method):
         """Raise ValueError (-> message box) for non-numeric entries of the chosen method."""
-        checks = {"stochastic": [self.v_percent], "gridcell_average": [self.v_grid],
+        checks = {"stochastic": [self.v_percent],
                   "spherical_kent": [self.v_grid_kent], "outlier_removal": [self.v_grid_ko],
+                  "outlier_carmichael": [self.v_grid_carm],
                   "firstorder": [self.v_fo_dist, self.v_fo_angle]}[method]
-        if self.v_target_on.get() and method in ("gridcell_average", "spherical_kent",
-                                                 "outlier_removal"):
+        if self.v_target_on.get() and method in ("spherical_kent", "outlier_removal",
+                                                 "outlier_carmichael"):
             int(self.v_target_n.get())
         for v in checks:
             float(v.get())
+        if method == "spherical_kent" and self.v_kappa_min.get().strip():
+            float(self.v_kappa_min.get())                    # blank = no kappa filter
         return True
 
     def _do_merge(self, prepare, args=None):
@@ -735,11 +764,9 @@ class App(tk.Tk):
                 "ratio": self.v_ratio.get(), "increment": self.v_incr.get(),
                 "dip": self.v_dip.get(), "dipdir": self.v_dipdir.get(),
                 "is_dipdir": self.v_is_dipdir.get(),
-                "point_method": {"stochastic": "stochastic", "gridcell_average": "gridcell_average",
-                                 "spherical_kent": "spherical_kent", "outlier_removal":
-                                 "outlier_removal", "firstorder": "firstorder"}[self.v_method.get()],
+                "point_method": self.v_method.get(),       # the radio values are the engine names
                 "fault_method": self.v_fault_method.get(),
-                "grid_size": self.v_grid.get(),
+                "grid_size": self.v_grid_kent.get(),
                 "fo_distance": self.v_fo_dist.get(), "fo_angle": self.v_fo_angle.get()})
             return (self._rec("point", self.v_points), self._rec("line", self.v_faults),
                     self._rec("polygon", self.v_polys), params)

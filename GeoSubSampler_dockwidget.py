@@ -171,18 +171,6 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         vbox.addLayout(row_stoch)
         self._subsample_group.addButton(self.radioButton_stochastic)
 
-        # (o) Grid Cell Avg
-        self.radioButton_gsa = QtWidgets.QRadioButton("Grid Cell Avg")
-        self.lineEdit_grid_size = QtWidgets.QLineEdit("5000")
-        self.lineEdit_grid_size.setFixedWidth(75)
-        row_gsa = QtWidgets.QHBoxLayout()
-        row_gsa.addWidget(self.radioButton_gsa)
-        row_gsa.addWidget(self._lbl("Grid Size (m)"))
-        row_gsa.addWidget(self.lineEdit_grid_size)
-        row_gsa.addStretch()
-        vbox.addLayout(row_gsa)
-        self._subsample_group.addButton(self.radioButton_gsa)
-
         # (o) Kent
         self.radioButton_kent = QtWidgets.QRadioButton("Kent")
         self.lineEdit_grid_size_kent = QtWidgets.QLineEdit("5000")
@@ -191,6 +179,10 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         row_kent.addWidget(self.radioButton_kent)
         row_kent.addWidget(self._lbl("Grid Size (m)"))
         row_kent.addWidget(self.lineEdit_grid_size_kent)
+        self.lineEdit_kent_kappa_min = QtWidgets.QLineEdit("")
+        self.lineEdit_kent_kappa_min.setFixedWidth(50)
+        row_kent.addWidget(self._lbl("Min kappa"))
+        row_kent.addWidget(self.lineEdit_kent_kappa_min)
         row_kent.addStretch()
         vbox.addLayout(row_kent)
         self._subsample_group.addButton(self.radioButton_kent)
@@ -207,12 +199,26 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         row_ko.addWidget(self.radioButton_kent_outlier)
         row_ko.addWidget(self._lbl("Grid Size (m)"))
         row_ko.addWidget(self.lineEdit_grid_size_kent_2)
+        self.checkBox_kent_outlier_iter = QtWidgets.QCheckBox("Iterative")
+        row_ko.addWidget(self.checkBox_kent_outlier_iter)
         row_ko.addStretch()
         row_ko.addWidget(self.pushButton_subsample_points)
         vbox.addLayout(row_ko)
         self._subsample_group.addButton(self.radioButton_kent_outlier)
 
-        # Target N — shared by all three grid cell methods
+        # (o) Carmichael — iterative multi-outlier removal
+        self.radioButton_carmichael = QtWidgets.QRadioButton("Carmichael")
+        self.lineEdit_grid_size_carm = QtWidgets.QLineEdit("5000")
+        self.lineEdit_grid_size_carm.setFixedWidth(75)
+        row_carm = QtWidgets.QHBoxLayout()
+        row_carm.addWidget(self.radioButton_carmichael)
+        row_carm.addWidget(self._lbl("Grid Size (m)"))
+        row_carm.addWidget(self.lineEdit_grid_size_carm)
+        row_carm.addStretch()
+        vbox.addLayout(row_carm)
+        self._subsample_group.addButton(self.radioButton_carmichael)
+
+        # Target N — shared by all the grid cell methods
         self.checkBox_target_n = QtWidgets.QCheckBox("Auto-fit to N pts")
         self.spinBox_target_n = QtWidgets.QSpinBox()
         self.spinBox_target_n.setRange(1, 100000)
