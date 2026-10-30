@@ -41,6 +41,8 @@ The toolbox has a tool that sets up the environment for you. ArcGIS Pro's defaul
 `arcgispro-py3-geotools`, installs the missing packages, checks that they all import, and makes the new
 environment the one ArcGIS Pro uses.
 
+> **Note:** the tool creates a **new** environment, `arcgispro-py3-geotools`, as a copy of `arcgispro-py3`. It does not change `arcgispro-py3` or any other environment you already have. It then makes the new environment the one ArcGIS Pro uses, so **restart ArcGIS Pro** when it has finished. To go back, choose another environment in **Project > Package Manager** and restart ArcGIS Pro. The tool cannot change or delete the environment ArcGIS Pro is using at the time, so to run it again with *Delete the environment first*, switch to another environment and restart first.
+
 1. In the ArcGIS Pro Catalog pane, go to **Toolboxes > Add Toolbox** and select `ARCGIS/GeoSubSampler.pyt`.
 2. In the GeoSubSampler toolbox, open **Setup > Set Up Python Environment** and click **Run**. It needs an
    internet connection and takes about 10 minutes. Click **View Details** in the Geoprocessing pane to

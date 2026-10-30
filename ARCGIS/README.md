@@ -14,7 +14,8 @@ ArcGIS Pro equivalent of the GeoSubSampler QGIS plugin, modelled on `SGTool/ARCG
    `scipy`, `matplotlib` (and `fiona` for map simplification, `triangle` for dyke triangulation).
    The easiest way is to run the toolbox's **Setup > Set Up Python Environment** tool, then restart
    ArcGIS Pro. It runs `setup_arcgispro_env.py` from this folder, which clones the default environment,
-   installs everything, and activates the clone (see the main
+   installs everything, and activates the clone; it does not change `arcgispro-py3` or any other
+   existing environment, and ArcGIS Pro must be restarted to use the new one (see the main
    [README](../README.md#setting-up-the-arcgis-pro-python-environment)).
    To do it by hand instead: clone the default environment in the
    Python Package Manager, add what is missing, and activate the clone. The launch tool checks this
