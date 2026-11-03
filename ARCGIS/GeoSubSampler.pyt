@@ -8,9 +8,10 @@ process, hands it the point / line / polygon layers of the open project, and the
 result the GUI writes to the active map while the GUI stays open.
 """
 
+import logging
 import json
 import os
-import subprocess
+import subprocess  # nosec B404 - subprocess runs fixed programs (python, conda, pip), never user input
 import sys
 import tempfile
 import time
@@ -67,6 +68,7 @@ def _collect_layers(proj):
                                if f.type not in ("Geometry", "OID", "Blob", "Raster", "GlobalID")],
                 })
             except Exception:
+                logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
                 continue
     return layers
 
@@ -142,7 +144,7 @@ class LaunchGUI:
             return
 
         # geopandas etc. must be importable by that interpreter
-        probe = subprocess.run([python_exe, "-c", "import geopandas, shapely, sklearn, networkx"],
+        probe = subprocess.run([python_exe, "-c", "import geopandas, shapely, sklearn, networkx"],  # nosec B603 - fixed program and arguments built by this code, no shell
                                capture_output=True, text=True,
                                creationflags=subprocess.CREATE_NO_WINDOW)   # no console flash
         if probe.returncode != 0:
@@ -162,7 +164,7 @@ class LaunchGUI:
         if os.path.exists(REFRESH_REQ):
             os.remove(REFRESH_REQ)
 
-        proc = subprocess.Popen([python_exe, gui_path, INFO_FILE],
+        proc = subprocess.Popen([python_exe, gui_path, INFO_FILE],  # nosec B603 - fixed program and arguments built by this code, no shell
                                 creationflags=subprocess.CREATE_NEW_CONSOLE)
         messages.addMessage(f"GeoSubSampler GUI launched ({len(info['layers'])} feature "
                             f"layer(s) passed). Close the GUI window to finish this tool.")
@@ -181,7 +183,7 @@ class LaunchGUI:
                     with open(INFO_FILE, "w") as f:
                         json.dump(info, f)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
 
             try:                                                    # results waiting for the map
                 with open(PENDING_FILE) as f:
@@ -205,11 +207,11 @@ class LaunchGUI:
                     with open(PENDING_FILE, "w") as f:
                         json.dump([e for e in current if e["path"] not in done], f)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
                 try:
                     arcpy.RefreshTOC()
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
         messages.addMessage("GeoSubSampler GUI closed.")
 
 

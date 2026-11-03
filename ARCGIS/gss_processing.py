@@ -14,6 +14,7 @@ Layer record keys:
     fields      list of [field name, field type]
 """
 
+import logging
 import csv
 import math
 import os
@@ -197,7 +198,7 @@ class GSSProcessor:
                             safe_filename(rec["name"]) + safe_filename(suffix))
         path = base + ".shp"
         if os.path.exists(path):
-            path = f"{base}_{random.randint(10000, 99999)}.shp"
+            path = f"{base}_{random.randint(10000, 99999)}.shp"  # nosec B311 - random numbers for sampling/colours, not for security
         return path
 
     def _save_gdf(self, gdf, path):
@@ -271,7 +272,7 @@ class GSSProcessor:
         folder = self._output_directory(rec)
         new_path = os.path.join(folder, stem + ".shp")
         if os.path.exists(new_path):
-            new_path = os.path.join(folder, f"{stem}_{random.randint(10000, 99999)}.shp")
+            new_path = os.path.join(folder, f"{stem}_{random.randint(10000, 99999)}.shp")  # nosec B311 - random numbers for sampling/colours, not for security
 
         if gdf2.empty:
             self.warn("No points were retained - an empty point layer was created. "
@@ -647,7 +648,7 @@ class GSSProcessor:
                         if sc > best_score:
                             best_score, best_gdf = sc, res.get('gdf_with_clusters')
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
                 if best_gdf is not None:
                     return best_gdf.set_crs(gdf.crs, allow_override=True)
             except Exception as exc:

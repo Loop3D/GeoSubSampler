@@ -11,6 +11,7 @@ Can also be run by hand:  python GeoSubSampler_GUI.py [info.json]
 (with no file, layers can be added from disk with the "Add file..." buttons).
 """
 
+import logging
 import json
 import os
 import queue
@@ -91,7 +92,7 @@ def _use_app_icon(app_id):
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
     except Exception:
-        pass  # not Windows, or an old Windows: the icon still shows on the window
+        logging.getLogger(__name__).debug("Ignored exception", exc_info=True)  # not Windows, or an old Windows: the icon still shows on the window
 
 
 def _set_window_icon(win, png):
@@ -101,7 +102,7 @@ def _set_window_icon(win, png):
         win.iconphoto(True, img)
         win._sgt_icon = img  # keep a reference, or Tk drops the image
     except Exception:
-        pass
+        logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
 
 
 class App(tk.Tk):
@@ -621,7 +622,7 @@ class App(tk.Tk):
                 "fields": [[c, "Double" if str(gdf[c].dtype).startswith(("float", "int"))
                             else "String"] for c in gdf.columns if c != "geometry"]}, ""))
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
         try:
             try:
                 with open(PENDING_FILE) as f:

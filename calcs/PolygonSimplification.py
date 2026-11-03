@@ -166,6 +166,7 @@ preprocess        : if True (default), run Stage 0 topology pre-processing
 snap_decimals     : decimal places for coordinate grid in Stage 0 (default 7)
 """
 
+import logging
 import heapq
 import copy
 import os
@@ -536,7 +537,7 @@ class SimplificationEngine:
                     if geom.is_valid and not geom.is_empty:
                         records.append({'code': str(code).strip(), 'geom': geom})
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
 
         if not records:
             return {}, set()
@@ -586,6 +587,7 @@ class SimplificationEngine:
                 try:
                     shared = bi.intersection(rj['geom'].boundary)
                 except Exception:
+                    logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
                     continue
 
                 if shared is None or shared.is_empty:
@@ -654,7 +656,7 @@ class SimplificationEngine:
                     if g.is_valid and not g.is_empty:
                         geoms.append(g)
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
 
         if not geoms:
             return False, None
@@ -2143,6 +2145,7 @@ def preprocess_topology(
                 try:
                     inter = gi.intersection(gj)
                 except Exception:
+                    logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
                     continue
                 if inter.is_empty or inter.area <= noise_area:
                     continue
@@ -2752,6 +2755,7 @@ def vector_simplify_file_two_stage(
                         # Pre-simplify at the safe threshold
                         _pre_simp = engine.visvalingam_whyatt(_arc_tb, _safe_thr)
                     except Exception:
+                        logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
                         continue
                     if _pre_simp is None or _pre_simp.is_empty:
                         continue
@@ -2807,7 +2811,7 @@ def vector_simplify_file_two_stage(
                     return MultiPolygon([Polygon(p[0], p[1:])
                                          for p in gd['coordinates']]).area
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
             return 0.0
 
         _thin_records.sort(key=_rec_area, reverse=True)  # largest-area first
@@ -2990,7 +2994,7 @@ def vector_simplify_file_two_stage(
                                                 _retry_sg = _retry_poly
                                                 break  # highest viable threshold found
                                     except Exception:
-                                        pass
+                                        logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
 
                                 _retry_thr *= 0.9  # step down 10 % and try again
 

@@ -18,6 +18,7 @@ sequence of intermediate ratios starting at `increment`, with each successive
 step 1.5× the previous step size, until the target ratio is reached.
 """
 
+import logging
 import math
 import os
 import tempfile
@@ -551,7 +552,7 @@ def _merge_to_count(gdf, target_count, priority_cols=None):
                     if sl > 0:
                         neighbors.append((ci, sl))
             except Exception:
-                pass
+                logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
 
         if not neighbors:
             # Isolated polygon — nearest centroid as emergency fallback

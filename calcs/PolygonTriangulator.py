@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -378,6 +379,7 @@ class PolygonTriangulator:
                     if triangle_poly.is_valid and triangle_poly.area > 1e-10:
                         triangles.append(triangle_poly)
                 except:
+                    logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
                     continue
             
             print(f"    Triangle library created {len(triangles)} triangles")
@@ -420,7 +422,7 @@ class PolygonTriangulator:
                     overlap_ratio = overlap.area / triangle.area
                     return overlap_ratio > 0.5
             except:
-                pass
+                logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
             
             return False
             
@@ -432,13 +434,13 @@ class PolygonTriangulator:
         Generate random value based on field type.
         """
         if field_type == 'string':
-            return str(random.randint(1, 100000))
+            return str(random.randint(1, 100000))  # nosec B311 - random numbers for sampling/colours, not for security
         elif field_type == 'float':
-            return round(random.uniform(1.0, 100000.0), 3)
+            return round(random.uniform(1.0, 100000.0), 3)  # nosec B311 - random numbers for sampling/colours, not for security
         elif field_type == 'int':
-            return random.randint(1, 100000)
+            return random.randint(1, 100000)  # nosec B311 - random numbers for sampling/colours, not for security
         else:
-            return random.randint(1, 100000)  # Default to int
+            return random.randint(1, 100000)  # Default to int  # nosec B311 - random numbers for sampling/colours, not for security
     
     def visualize_triangulation(self, result_gdf, title="Triangulated Polygons", figsize=(15, 10)):
         """

@@ -21,6 +21,7 @@
  *                                                                         *
  ***************************************************************************/
 """
+import logging
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction
@@ -351,7 +352,7 @@ class GeoSubSampler:
             if idx >= 0:
                 real_name = fields.at(idx).name()
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
 
         out_path = self._resolved_source(layer)
         field_map = getattr(self, '_field_name_maps', {}).get(out_path)
@@ -519,7 +520,7 @@ class GeoSubSampler:
             source_layer.exportNamedStyle(doc)
             new_layer.importNamedStyle(doc)
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
         QgsProject.instance().addMapLayer(new_layer)
 
     @staticmethod
@@ -601,7 +602,7 @@ class GeoSubSampler:
                             self._safe_filename(qgis_layer.name()) + self._safe_filename(suffix))
         path = base + ".shp"
         if os.path.exists(path):
-            path = f"{base}_{random.randint(10000, 99999)}.shp"
+            path = f"{base}_{random.randint(10000, 99999)}.shp"  # nosec B311 - random numbers for sampling/colours, not for security
         return path
 
     def _save_gdf(self, gdf, path):
@@ -643,7 +644,7 @@ class GeoSubSampler:
         )
         # print("new_path:", new_path)
         if os.path.exists(new_path):
-            random_5_digit_integer = random.randint(10000, 99999)
+            random_5_digit_integer = random.randint(10000, 99999)  # nosec B311 - random numbers for sampling/colours, not for security
             new_path = (
                 layer_path
                 + "/"
@@ -1074,7 +1075,7 @@ class GeoSubSampler:
                         if sc > best_score:
                             best_score, best_gdf = sc, res.get('gdf_with_clusters')
                     except Exception:
-                        pass
+                        logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
                 if best_gdf is not None:
                     return best_gdf.set_crs(gdf.crs, allow_override=True)
             except Exception as exc:
