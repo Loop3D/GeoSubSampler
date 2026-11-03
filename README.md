@@ -277,7 +277,7 @@ The plugin includes validation for:
 - NetworkX
 - triangle (only needed for polygon triangulation)
 
-These are listed in `requirements.txt`. Most of them ship with QGIS; scikit-learn, NetworkX and triangle usually need to be installed. If the [QPIP](https://plugins.qgis.org/plugins/a00_qpip/) plugin is installed it adds them automatically from `requirements.txt`; otherwise install them with QPIP or pip before enabling GeoSubSampler.
+These are listed in `requirements.txt`. Most of them ship with QGIS; scikit-learn, NetworkX and triangle usually need to be installed. If the [QPIP](https://plugins.qgis.org/plugins/a00_qpip/) plugin is installed it adds them automatically from `requirements.txt`; otherwise install them with QPIP or pip before enabling GeoSubSampler. If any are missing, GeoSubSampler does not fail to load: it shows a warning naming them, and its button explains how to install them.
 
 ## License
 

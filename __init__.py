@@ -31,6 +31,15 @@ def classFactory(iface):  # pylint: disable=invalid-name
     :param iface: A QGIS interface instance.
     :type iface: QgsInterface
     """
-    #
-    from .GeoSubSampler import GeoSubSampler
+    # without the packages in requirements.txt the plugin's modules would fail to
+    # import: load a stand-in that warns and says how to install them instead
+    from .missing_packages import MissingPackagesPlugin, missing_packages
+
+    missing = missing_packages()
+    if missing:
+        return MissingPackagesPlugin(iface, missing)
+    try:
+        from .GeoSubSampler import GeoSubSampler
+    except ImportError as e:  # installed, but cannot be loaded (e.g. a broken package)
+        return MissingPackagesPlugin(iface, [getattr(e, "name", None) or "?"], error=str(e))
     return GeoSubSampler(iface)
