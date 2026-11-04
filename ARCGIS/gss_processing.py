@@ -29,19 +29,22 @@ import pandas as pd
 import geopandas as gpd
 
 from calcs.StructuralPolygonSubSampler import StructuralPolygonSubSampler
-from calcs.PolygonTriangulator import PolygonTriangulator
 from calcs.FaultLineMerger import FaultLineMerger
 from calcs.FaultLengths import FaultLengths
-from calcs.FaultsGraph import FaultsGraph
 from calcs.FaultStratOffset import FaultStratOffset
 from calcs.FaultClusterOrientation import FaultsOrientations
 from calcs.FirstOrderOrientation import (SubsamplingEngine, save_grid_to_shapefile,
                                          dip_field_problem)
 from calcs.TopferPillewizer import (dipdir_to_strike, topfer_count, scale_iterations,
                                     scale_points_tp, scale_lines_tp, scale_polygons_tp)
-from calcs.PolygonSimplification import vector_simplify_file_two_stage
 
 DEG_PER_M_INV = 110000.0     # metres per degree, as used by the QGIS plugin
+
+
+def _triangulator_class():
+    # imported when first needed: it brings in matplotlib and scipy
+    from calcs.PolygonTriangulator import PolygonTriangulator
+    return PolygonTriangulator
 
 
 class GSSError(Exception):
@@ -506,7 +509,7 @@ class GSSProcessor:
                 self.warn("Ignore field is set but the Ignore Codes box is empty - "
                           "no polygons will be triangulated.")
             if dyke_field and dyke_codes:
-                tri = PolygonTriangulator(
+                tri = _triangulator_class()(
                     gdf=gdf, id_column=dyke_field, min_area_threshold=min_area * 1e6,
                     distance_threshold=dist, strat1=strat[0] or None, strat2=strat[1] or None,
                     strat3=strat[2] or None, strat4=strat[3] or None,
@@ -545,6 +548,7 @@ class GSSProcessor:
     def simplify_map(self, poly_rec, fault_rec, area_tolerance):
         if poly_rec is None or fault_rec is None:
             raise GSSError("Map simplification: select both a polygon layer and a fault layer.")
+        from calcs.PolygonSimplification import vector_simplify_file_two_stage   # (loaded when needed)
         area_tolerance = int(area_tolerance)
         input_file = self.resolved_source(poly_rec)
         fault_file = self.resolved_source(fault_rec)
@@ -556,6 +560,32 @@ class GSSProcessor:
             fault_file=fault_file)
         self._emit(output_file, poly_rec)
         self._emit(fault_out, fault_rec)
+
+    def densify(self, poly_rec, fault_rec, spacing_m, node_crossings=True):
+        """
+        Insert nodes so that no segment is longer than ``spacing_m`` metres, keeping the polygon and
+        fault layers topologically consistent: a new node on a boundary shared by two polygons, or
+        run along by a fault, is the same node in all of them.
+        """
+        from calcs.Densify import densify_layers
+        recs = [r for r in (poly_rec, fault_rec) if r is not None]
+        if not recs:
+            raise GSSError("Densify: select a polygon layer and/or a fault layer.")
+        if spacing_m <= 0:
+            raise GSSError("Densify: the node spacing must be a number of metres above zero.")
+        gdfs = [gpd.read_file(self.resolved_source(r)) for r in recs]
+        results, stats = densify_layers(gdfs, spacing_m,
+                                        geographic=any(r.get("geographic") for r in recs),
+                                        node_crossings=node_crossings)
+        tag = f"_dense_{spacing_m:g}"
+        for rec, gdf in zip(recs, results):
+            self._emit(self._save_gdf(gdf, self._make_output_path(rec, tag)), rec)
+        msg = f"Densified to {spacing_m:g} m: {stats['vertices_in']} -> {stats['vertices_out']} vertices"
+        if stats.get("nodes_added_at_crossings"):
+            msg += f"; {stats['nodes_added_at_crossings']} shared nodes added where features cross"
+        if stats.get("vertices_welded"):
+            msg += f"; {stats['vertices_welded']} near-coincident vertices welded"
+        self.log(msg + ".")
 
     # ------------------------------------------------------------------ faults
     def merge_segments(self, fault_rec, tolerance, search_angle, join_angle):
@@ -584,6 +614,7 @@ class GSSProcessor:
             self._emit(out, fault_rec)
 
         elif method == "graph":
+            from calcs.FaultsGraph import FaultsGraph       # (networkx: loaded when needed)
             FaultsGraph().CalcFaultsGraph(src)
             directory, filename = os.path.split(src)
             self._emit(os.path.join(directory, "simplified_full_" +
@@ -599,6 +630,8 @@ class GSSProcessor:
             FaultStratOffset().CalcFaultStratOffset(
                 src, self.resolved_source(poly_rec), out, cols, offset_distance=50)
             self._emit(out, fault_rec)
+            # the points where the offset was read, with their offset level and the units either side
+            self._emit(out.replace(".shp", "_samples.shp"), None)
 
         elif method == "clusters":
             out_az = src.replace(".shp", "_endpt_az.shp")
@@ -622,6 +655,7 @@ class GSSProcessor:
             try:
                 tmp_in = os.path.join(tmpdir, 'tp_graph.shp')
                 gdf.to_file(tmp_in)
+                from calcs.FaultsGraph import FaultsGraph       # (networkx: loaded when needed)
                 FaultsGraph().CalcFaultsGraph(tmp_in)
                 tmp_edges = os.path.join(tmpdir, 'simplified_full_tp_graph_edges.shp')
                 if os.path.exists(tmp_edges):
@@ -809,7 +843,7 @@ class GSSProcessor:
                         strat3=strat[2] or None, strat4=strat[3] or None,
                         dyke_field=dyke_field or None,
                         dyke_codes=dyke_codes if dyke_field else None,
-                        triangulator_class=PolygonTriangulator if dyke_field else None,
+                        triangulator_class=_triangulator_class() if dyke_field else None,
                         info=info)
                     cur_poly = scaled
                 except Exception as exc:

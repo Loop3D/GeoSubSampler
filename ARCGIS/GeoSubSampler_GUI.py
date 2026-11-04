@@ -322,7 +322,7 @@ class App(tk.Tk):
                                                      for v in ("10", "30", "150"))
         tip(tk.Button(r, text="Merge Segments", font=FONT, width=16,
                       command=lambda: self._run("Fault segment merging", self._do_merge)),
-            "Merge connected polylines\nWARNING: VERY SLOW FOR LARGE DATASETS (>1s per object)"
+            "Merge connected polylines\nAbout half a second for 1,400 faults; larger sets scale roughly in proportion"
             ).pack(side="left")
         for text, var in (("Dist.(m)", self.v_mtol), ("Search Angle", self.v_msearch),
                           ("Join Angle", self.v_mjoin)):
@@ -396,6 +396,17 @@ class App(tk.Tk):
             "Simplify map polygons by area tolerance, respecting fault topology"
             ).pack(side="right")
 
+        r = tk.Frame(f, bg=BG)
+        r.pack(fill="x", pady=2)
+        self.v_dens_spacing = tk.StringVar(value="100")
+        self.v_dens_cross = tk.BooleanVar(value=True)
+        label(r, "Node Spacing (m)").pack(side="left")
+        entry(r, self.v_dens_spacing, 7).pack(side="left", padx=3)
+        tk.Checkbutton(r, text="Shared nodes at crossings", variable=self.v_dens_cross,
+                       bg=BG, font=FONT).pack(side="left", padx=6)
+        tk.Button(r, text="Densify Nodes", font=FONT_BOLD, width=20,
+                  command=lambda: self._run("Densify nodes", self._do_densify)).pack(side="right")
+
     def _build_tp(self, p):
         f = section(p, "Töpfer & Pillewizer Scaling")
         f.pack(fill="x", padx=6, pady=4)
@@ -453,6 +464,9 @@ class App(tk.Tk):
             str(self.v_msearch): "Minimum angle mismatch between end segments",
             str(self.v_mjoin): "Maximum angle for newly-formed angle defined by end segments",
             str(self.v_area_tol): "Tolerance for area-based filtering, in m2",
+            str(self.v_dens_spacing): ("Largest distance between nodes, in metres (degrees are converted "
+                                       "approximately).\nEvery segment is divided into equal parts no "
+                                       "longer than this."),
             str(self.v_ratio): "OS/TS ratio — e.g. 0.1 for going from 1:50 000 to 1:500 000",
             str(self.v_incr): (
                 "Fractional reduction per step (0–1).\n"
@@ -499,7 +513,7 @@ class App(tk.Tk):
                 "points by angle from the cell mean. Not applied by the Töpfer & Pillewizer tool."),
             "Rescale Map": "Rescale map polygons",
             "Merge Segments": ("Merge connected polylines\n"
-                               "WARNING: VERY SLOW FOR LARGE DATASETS (>1s per object)"),
+                               "About half a second for 1,400 faults; larger sets scale roughly in proportion"),
             "Length Only": "Add fault length attribute\nDoes not filter data, just adds length "
                            "attribute",
             "Graph then Length": "Add graph data to faults\nDoes not filter data, just adds "
@@ -512,10 +526,21 @@ class App(tk.Tk):
                                 "Uses the orientation and fault methods selected above."),
             "Simplify Map": ("Simplify map polygons based on area tolerance, respecting fault "
                              "topology"),
+            "Shared nodes at crossings": (
+                "Also add a node, shared by both, where a fault or polygon boundary crosses a polygon\n"
+                "boundary, and where a vertex lies on another feature's segment (T-junction)."),
+            "Densify Nodes": (
+                "Add nodes along the selected polygon and fault layers. New nodes on a shared boundary\n"
+                "are identical in the polygon on each side and in any fault running along it.\n"
+                "Shapes do not change. Vertices closer than 1 micrometre are first merged."),
         }
         strat_tip = ("Add stratigraphic offset data to faults\n"
                      "Requires both fault and map polygon layers\n"
                      "as well as Geology Map Priority Codes (see below) to be defined\n"
+                     "The units either side of the fault are read at every point where the fault crosses a\n"
+                     "geological contact (start/middle/end for faults that meet none). Adds the maximum\n"
+                     "offset level, how many samples were used (n_samples) and how many showed an offset\n"
+                     "(n_offset), and saves the sample points as *_stratOffset_samples.\n"
                      "Does not filter data, just adds Strat Offset attributes")
 
         def walk(w):
@@ -778,6 +803,12 @@ class App(tk.Tk):
             return (self._rec("polygon", self.v_polys), self._rec("line", self.v_faults),
                     int(float(self.v_area_tol.get())))
         self._processor().simplify_map(*args)
+
+    def _do_densify(self, prepare, args=None):
+        if prepare:
+            return (self._rec("polygon", self.v_polys), self._rec("line", self.v_faults),
+                    float(self.v_dens_spacing.get()), self.v_dens_cross.get())
+        self._processor().densify(*args)
 
     def _do_tp(self, prepare, args=None):
         if prepare:

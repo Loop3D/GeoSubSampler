@@ -152,7 +152,7 @@ Retains orientation points based on proximity to geological contacts and angular
 
 #### Segment Merging
 Merges connected fault segments based on geometric criteria.   
-WARNING: This is not particulary optimised and may take hours to complete on large (>10k polylines) datasets   
+About half a second for 1,400 faults; the time grows roughly in proportion to the number of faults.   
 
 **Parameters:**
 - **Distance Tolerance**: Maximum distance between line endpoints for merging
@@ -178,7 +178,17 @@ Filters fault lines based on minimum length criteria.
 - **Fault Graph**: Calculate Network Graph parameters for fault network   
   - Does not actual filter, just creates new layer   
 
-- **Fault Stratigraphic Offset**: Maximum stratigraphic offset accross fault for start-, mid- and end-points for fault network   
+- **Fault Stratigraphic Offset**: Stratigraphic offset across each fault   
+  - The geology is read on each side of the fault (a few metres either side) at **every point where the fault
+    crosses a geological contact** (polygon boundary), which includes triple junctions on the fault. Where a
+    fault runs along a contact the middle of the shared section is used. Faults that meet no contact are
+    sampled at their start, middle and end (stepping 50 m either side), so every fault gets an answer.
+  - Each fault gets its maximum offset level (`max_off_lv`: -1 edge of map, 0 no offset, higher numbers a more
+    general stratigraphic level at which the two sides differ), where it was found (`max_off_x`, `max_off_y`),
+    how many samples were used (`n_samples`), and how many showed an offset (`n_offset`), no offset
+    (`n_nooffset`) or the edge of the map (`n_edge`); `sample_src` is `contacts` or `ends`.
+  - The sample points themselves are saved as `<output>_samples.shp` (fault, location, offset level and the
+    units on each side) and added to the map.
   - Does not actual filter, just creates new layer   
 
 ### 3. Polygon Processing
@@ -227,6 +237,23 @@ Define the hierarchy for polygon merging decisions:
 - **Area Tolerance (m2)**: Area threshold for exterior vertices
   - *Description*:  Decimates map polygons and associated faults composed of line segments to a similar curves with fewer vertices. Vertices to be removed are those whose triangular area (area defined by the vertex and its two neighbours) exceeds the threshold. When a polygon vertex is to be removed that coincides with a fault vertex, the two will be removed together to maintain their topological relationships.
 
+#### Densify Nodes
+Inserts nodes so that no segment is longer than a chosen spacing, **keeping polygons and faults topologically
+consistent**: a new node on a boundary shared by two polygons, or run along by a fault, is the same node in
+all of them. (Densifying each polygon separately does not give this: tiny floating-point differences between
+the two directions in which a shared edge is traversed leave the two copies with slightly different nodes.)
+
+- **Node Spacing (m)**: the largest distance between nodes. Each segment is divided into equal parts no longer
+  than this, so new nodes are between half the spacing and the spacing apart. Shapes do not change. For
+  geographic coordinates the distance is converted from degrees approximately (111 km per degree of latitude,
+  scaled by cos(latitude) for longitude).
+- **Shared nodes at crossings**: also adds a node, shared by both features, where a fault or polygon boundary
+  crosses a polygon boundary, and where a vertex lies on another feature's segment (a T-junction).
+- Vertices closer together than 1 micrometre are merged first: nodes that are "shared" in a file are often
+  only shared to within rounding noise, which would otherwise leave the two sides with different nodes.
+- Uses the selected polygon and/or fault layer; with both, nodes are shared between them. Output layers are
+  named `<layer>_dense_<spacing>`. About half a second for 1,100 polygons and 1,400 faults.
+
 ## Töpfer-Pillewizer 1996 rescaling
 The TP scaling rule: TN = ON * (OS/TS)^(x/2)   
 - TN  — target number of objects after generalisation
@@ -252,8 +279,18 @@ Output files follow the pattern: `[original_name]_[method]_[parameters].shp`
 - If a file with the same name exists, a random 5-digit suffix is added
 
 ### Performance Considerations
-- **Segment Merging**: Very slow for large datasets (>1 second per object)
-- **Large Datasets**: Consider using subsampling methods before applying computationally intensive operations
+Typical times on real data (28,600 bedding points; 1,121 polygons with 144,000 vertices; 1,403 faults):
+- Kent / Kent Outlier / Carmichael grid methods: about a second at 5 km cells. The iterative Kent Outlier
+  option grows with the square of the number of points in the largest cell, so very large cells (several
+  thousand points) are slow.
+- First Order sampling: about a second (it was ~100 s before it used a spatial index).
+- Merge Segments, Fault Length, Fault Graph, Fault Strat Offset, Densify: from a fraction of a second to a few
+  seconds. Cluster faults: several seconds.
+- Rescale Map: a few seconds. Simplify Map: the slowest tool (about 10-15 s here); most of the time is in
+  the topology preparation rather than in the simplification itself.
+- Auto-fit to N points counts grid cells directly and no longer reruns the method for each trial size.
+- The heavier libraries (matplotlib, scikit-learn, networkx) are loaded only when a tool that needs them is
+  first used, so the plugin starts quickly.
 
 ## Error Handling
 

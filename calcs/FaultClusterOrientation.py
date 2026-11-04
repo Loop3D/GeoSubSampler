@@ -2,9 +2,6 @@
 # Includes all functions and example usage
 
 import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
 import geopandas as gpd
 import pandas as pd
 from pathlib import Path
@@ -14,6 +11,19 @@ import os
 
 warnings.filterwarnings("ignore")
 showPlots = False
+
+
+class _LazyPyplot:
+    """matplotlib.pyplot, imported the first time it is used.  Importing matplotlib and
+    scikit-learn at plugin start-up cost several seconds and nothing here needs them until
+    a plot is drawn or a clustering is run."""
+
+    def __getattr__(self, name):
+        import matplotlib.pyplot as _pyplot
+        return getattr(_pyplot, name)
+
+
+plt = _LazyPyplot()
 
 # ============================================================================
 # CORE CLUSTERING CLASS
@@ -68,6 +78,7 @@ class CircularKMeans:
         cartesian_coords = self._azimuth_to_cartesian(azimuths)
 
         # Perform k-means clustering
+        from sklearn.cluster import KMeans
         self.kmeans = KMeans(
             n_clusters=self.n_clusters, random_state=self.random_state, n_init=10
         )
@@ -102,6 +113,11 @@ class CircularKMeans:
         cartesian_coords = self._azimuth_to_cartesian(azimuths)
 
         if len(np.unique(self.labels_)) > 1:
+            from sklearn.metrics import silhouette_score
+            # the exact score needs all pairwise distances (quadratic): sample very large sets
+            if len(cartesian_coords) > 5000:
+                return silhouette_score(cartesian_coords, self.labels_,
+                                        sample_size=5000, random_state=42)
             return silhouette_score(cartesian_coords, self.labels_)
         else:
             return 0.0
@@ -213,6 +229,8 @@ class FaultsOrientations:
         n_clusters=None,
         max_clusters=10,
         output_shapefile=None,
+        preloaded=None,
+        verbose=True,
     ):
         """
         Complete workflow for clustering trend data from a shapefile.
@@ -229,16 +247,24 @@ class FaultsOrientations:
             Maximum number of clusters to test when finding optimal
         output_shapefile : str or Path, optional
             Path to save results as a new shapefile
+        preloaded : (GeoDataFrame, trend array), optional
+            The result of :meth:`read_trend_from_shapefile`, to avoid reading the file again
+        verbose : bool
+            Print the cluster statistics
 
         Returns:
         --------
         dict: Results including cluster labels, centers, and statistics
         """
 
-        print("=== Shapefile Trend Analysis ===\n")
+        if verbose:
+            print("=== Shapefile Trend Analysis ===\n")
 
         # Read the shapefile
-        gdf, trend_data = self.read_trend_from_shapefile(shapefile_path, trend_field)
+        if preloaded is not None:
+            gdf, trend_data = preloaded
+        else:
+            gdf, trend_data = self.read_trend_from_shapefile(shapefile_path, trend_field)
 
         # Find optimal clusters if not specified
         if n_clusters is None:
@@ -247,7 +273,8 @@ class FaultsOrientations:
             print(f"Optimal number of clusters: {n_clusters}\n")
 
         # Perform clustering
-        print(f"Performing clustering with {n_clusters} clusters...")
+        if verbose:
+            print(f"Performing clustering with {n_clusters} clusters...")
         clusterer = CircularKMeans(n_clusters=n_clusters, random_state=42)
         clusterer.fit(trend_data)
 
@@ -255,8 +282,9 @@ class FaultsOrientations:
         centers = clusterer.get_cluster_centers()
         silhouette = clusterer.calculate_silhouette_score(trend_data)
 
-        print(f"Silhouette score: {silhouette:.3f}")
-        print("\nCluster centers and statistics:")
+        if verbose:
+            print(f"Silhouette score: {silhouette:.3f}")
+            print("\nCluster centers and statistics:")
 
         results = {
             "gdf": gdf,
@@ -284,10 +312,11 @@ class FaultsOrientations:
             }
             cluster_stats.append(stats)
 
-            print(
-                f"  Cluster {i}: {centers[i]:.1f}° ({stats['count']} points, "
-                f"{stats['percentage']:.1f}%, σ={stats['std_dev']:.1f}°)"
-            )
+            if verbose:
+                print(
+                    f"  Cluster {i}: {centers[i]:.1f}° ({stats['count']} points, "
+                    f"{stats['percentage']:.1f}%, σ={stats['std_dev']:.1f}°)"
+                )
 
         results["cluster_stats"] = cluster_stats
 
@@ -306,7 +335,8 @@ class FaultsOrientations:
         # Save results if requested
         if output_shapefile:
             gdf_with_clusters.to_file(output_shapefile)
-            print(f"\nResults saved to: {output_shapefile}")
+            if verbose:
+                print(f"\nResults saved to: {output_shapefile}")
 
         if showPlots:
             # Plot results
@@ -885,9 +915,16 @@ class FaultsOrientations:
         return example_trends
 
     def example_manual_clusters(
-        self, shapefile_path, layer_name, azimuth_field="endpt_az"
+        self, shapefile_path, layer_name, azimuth_field="endpt_az", write_all=False
     ):
-        """Example showing how to define specific number of clusters."""
+        """
+        Try 2 to 30 clusters (as many as the data allow) and keep the best by silhouette score.
+
+        The shapefile is read once.  Only the best result is written
+        (``<layer_name>_fault_clusters_<n>.shp`` beside the input); pass ``write_all=True`` to
+        write one file for every number of clusters tried, as earlier versions did.
+        Returns the best number of clusters, or None.
+        """
 
         print("EXAMPLE: Manual Cluster Definition")
         print("=" * 40)
@@ -907,7 +944,8 @@ class FaultsOrientations:
             print("\nMethod 2: Comparing different cluster numbers")
             # Silhouette needs 2 <= k <= n_samples - 1, and k can't exceed the
             # number of distinct azimuths, so cap k for small fault sets.
-            _az = gpd.read_file(shapefile_path)[azimuth_field].dropna().values
+            loaded = self.read_trend_from_shapefile(shapefile_path, azimuth_field)
+            _az = loaded[1]
             max_k = min(30, len(_az) - 1, len(np.unique(_az % 180)))
             if max_k < 2:
                 print(f"Error: need at least 3 faults with distinct azimuths to "
@@ -917,19 +955,23 @@ class FaultsOrientations:
             print(f"Testing cluster numbers: 2 to {max_k}")
             silhouette_scores = []
 
+            layer_path = os.path.dirname(shapefile_path)
+            kept = {}
             for n in range(2, max_k + 1):
-                layer_path = os.path.dirname(shapefile_path)
                 new_path = layer_path + "/" + layer_name + f"_fault_clusters_{n}.shp"
                 try:
                     results = self.analyze_shapefile_trends(
                         shapefile_path=shapefile_path,
                         trend_field=azimuth_field,
                         n_clusters=n,
-                        output_shapefile=new_path,
+                        output_shapefile=new_path if write_all else None,
+                        preloaded=loaded,
+                        verbose=False,
                     )
                 except Exception as e:
                     print(f"{n} clusters failed ({e}) - skipping")
                     continue
+                kept[n] = results["gdf_with_clusters"]
                 cluster_numbers.append(n)
                 silhouette_scores.append(results["silhouette_score"])
                 print(
@@ -942,6 +984,10 @@ class FaultsOrientations:
 
             best_idx = np.argmax(silhouette_scores)
             best_n = cluster_numbers[best_idx]
+            if not write_all:
+                best_path = layer_path + "/" + layer_name + f"_fault_clusters_{best_n}.shp"
+                kept[best_n].to_file(best_path)
+                print(f"Results saved to: {best_path}")
             print(
                 f"\nBest number of clusters: {best_n} (Silhouette score: {silhouette_scores[best_idx]:.3f})"
             )

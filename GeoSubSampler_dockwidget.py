@@ -386,6 +386,20 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         row_area.addStretch()
         vbox.addLayout(row_area)
 
+        # Densify nodes (shared by polygons and faults)
+        self.lineEdit_densify_spacing = QtWidgets.QLineEdit("100")
+        self.lineEdit_densify_spacing.setFixedWidth(60)
+        self.checkBox_densify_crossings = QtWidgets.QCheckBox("Shared nodes at crossings")
+        self.checkBox_densify_crossings.setChecked(True)
+        self.pushButton_densify = QtWidgets.QPushButton("Densify Nodes")
+        row_dens = QtWidgets.QHBoxLayout()
+        row_dens.addWidget(self._lbl("Node Spacing (m)"))
+        row_dens.addWidget(self.lineEdit_densify_spacing)
+        row_dens.addWidget(self.checkBox_densify_crossings)
+        row_dens.addStretch()
+        row_dens.addWidget(self.pushButton_densify)
+        vbox.addLayout(row_dens)
+
 
         layout.addWidget(grp)
 

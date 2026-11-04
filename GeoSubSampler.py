@@ -46,15 +46,12 @@ import os.path
 import tempfile
 import shutil
 from .calcs.StructuralPolygonSubSampler import StructuralPolygonSubSampler
-from .calcs.PolygonTriangulator import PolygonTriangulator
 from .calcs.FaultLineMerger import FaultLineMerger
 from .calcs.FaultLengths import FaultLengths
-from .calcs.FaultsGraph import FaultsGraph
 from .calcs.FaultStratOffset import FaultStratOffset
 from .calcs.FaultClusterOrientation import FaultsOrientations
 from .calcs.FirstOrderOrientation import SubsamplingEngine, save_grid_to_shapefile, dip_field_problem
 from .calcs.TopferPillewizer import dipdir_to_strike, topfer_count, scale_iterations, scale_points_tp, scale_lines_tp, scale_polygons_tp
-from .calcs.PolygonSimplification import SimplificationEngine, vector_simplify_file_two_stage
 import geopandas as gpd
 import os
 import random
@@ -68,6 +65,12 @@ import numpy as np
 
 class GeoSubSampler:
     """QGIS Plugin Implementation."""
+
+    @staticmethod
+    def _triangulator_class():
+        # imported when first needed: it brings in matplotlib and scipy
+        from .calcs.PolygonTriangulator import PolygonTriangulator
+        return PolygonTriangulator
 
     def __init__(self, iface):
         """Constructor.
@@ -360,7 +363,9 @@ class GeoSubSampler:
             return field_map[real_name]
         return real_name
 
-    def setUpPointSampler(self, checkFields=True):
+    def setUpPointSampler(self, checkFields=True, columns_only=False):
+        """columns_only: read just the dip and dip direction columns (enough for the grid-cell
+        methods, whose output holds only what they compute - a big saving on wide tables)."""
         layerName = self.dockwidget.mMapLayerComboBox_points.currentText()
         dip_col = self.dockwidget.mFieldComboBox_dip.currentText()
         dip_dir_col = self.dockwidget.mFieldComboBox_dip_dir.currentText()
@@ -370,7 +375,15 @@ class GeoSubSampler:
 
         if os.path.exists(self._resolved_source(self.points_layer)):
 
-            gdf = gpd.read_file(self._resolved_source(self.points_layer))
+            src = self._resolved_source(self.points_layer)
+            wanted = None
+            if columns_only and dip_col and dip_dir_col:
+                wanted = [self._resolved_field(self.points_layer, dip_col),
+                          self._resolved_field(self.points_layer, dip_dir_col)]
+            try:
+                gdf = gpd.read_file(src, columns=wanted) if wanted else gpd.read_file(src)
+            except Exception:
+                gdf = gpd.read_file(src)
             fields_selected = True
 
             if (dip_col == "" or dip_dir_col == "") and checkFields:
@@ -828,7 +841,7 @@ class GeoSubSampler:
         return gdf2
 
     def kent(self):
-        result = self.setUpPointSampler()
+        result = self.setUpPointSampler(columns_only=True)
         if not result:
             return
         gdf, engine, dip_col, dip_dir_col = result
@@ -886,7 +899,7 @@ class GeoSubSampler:
             self.finalisePointSampler(gdf2, self.points_layer, name, display_size)
 
     def kentOutlier(self):
-        result = self.setUpPointSampler()
+        result = self.setUpPointSampler(columns_only=True)
         if not result:
             return
         gdf, engine, dip_col, dip_dir_col = result
@@ -933,7 +946,7 @@ class GeoSubSampler:
 
     def carmichael(self):
         """Grid-cell Kent averaging with iterative multi-outlier removal (Carmichael 2016)."""
-        result = self.setUpPointSampler()
+        result = self.setUpPointSampler(columns_only=True)
         if not result:
             return
         gdf, engine, dip_col, dip_dir_col = result
@@ -1044,6 +1057,7 @@ class GeoSubSampler:
             try:
                 tmp_in = os.path.join(tmpdir, 'tp_graph.shp')
                 gdf.to_file(tmp_in)
+                from .calcs.FaultsGraph import FaultsGraph       # (networkx: loaded when needed)
                 FaultsGraph().CalcFaultsGraph(tmp_in)
                 # save_graph_to_shapefile prepends prefix_ to the basename:
                 # tp_graph_edges.shp → simplified_full_tp_graph_edges.shp
@@ -1366,7 +1380,7 @@ class GeoSubSampler:
                         dyke_field=dyke_field or None,
                         dyke_codes=dyke_codes if dyke_field else None,
                         triangulator_class=(
-                            PolygonTriangulator if dyke_field else None),
+                            self._triangulator_class() if dyke_field else None),
                         info=poly_info,
                     )
                     current_polygon_gdf = poly_scaled
@@ -1544,7 +1558,7 @@ class GeoSubSampler:
                         self._warn("Ignore field is set but the Ignore Codes box is empty - "
                                    "no polygons will be triangulated.")
                     if dyke_index != 0 and dyke_codes:
-                        triangulator = PolygonTriangulator(
+                        triangulator = self._triangulator_class()(
                             gdf=gdf,
                             id_column=dyke_field,
                             min_area_threshold=min_area_threshold * 1000000.0,
@@ -1632,6 +1646,7 @@ class GeoSubSampler:
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
         if os.path.exists(self._resolved_source(self.polyline_layer)):
+            from .calcs.FaultsGraph import FaultsGraph       # (networkx: loaded when needed)
             graph_obj = FaultsGraph()
             graph_obj.CalcFaultsGraph(self._resolved_source(self.polyline_layer))
             directory, filename = os.path.split(self._resolved_source(self.polyline_layer))
@@ -1700,6 +1715,15 @@ class GeoSubSampler:
 
             self._add_layer_with_style(graph_layer, self.polyline_layer,
                                        self.polyline_layer.name() + "_stratOffset")
+
+            # the points where the offset was read (one per fault / contact crossing), with
+            # their offset level and the units either side
+            samples_path = new_path.replace(".shp", "_samples.shp")
+            if os.path.exists(samples_path):
+                samples_layer = QgsVectorLayer(
+                    samples_path, self.polyline_layer.name() + "_stratOffset_samples", "ogr")
+                if samples_layer.isValid():
+                    QgsProject.instance().addMapLayer(samples_layer)
 
     def fault_Lengths(self):
         self.polyline_layer = (
@@ -1796,6 +1820,7 @@ class GeoSubSampler:
         if polygon_layer is None or fault_layer is None:
             self._warn("Map simplification: select both a polygon layer and a fault layer.")
             return
+        from .calcs.PolygonSimplification import vector_simplify_file_two_stage   # (loaded when needed)
         area_tolerance = int(self.dockwidget.lineEdit_area_tolerance.text())
         input_file = self._resolved_source(polygon_layer)
         fault_file = self._resolved_source(fault_layer)
@@ -1820,6 +1845,50 @@ class GeoSubSampler:
 
         upscaled_fault = QgsVectorLayer(fault_path, fault_name, "ogr")
         self._add_layer_with_style(upscaled_fault, fault_layer, fault_name)
+
+    def densify(self):
+        """
+        Insert nodes so that no segment is longer than the chosen spacing, keeping the polygon
+        and fault layers topologically consistent: a new node on a boundary shared by two
+        polygons, or run along by a fault, is the same node in all of them.
+        """
+        from .calcs.Densify import densify_layers
+        polygon_layer = self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
+        fault_layer = self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
+        layers = [l for l in (polygon_layer, fault_layer) if l is not None]
+        if not layers:
+            self._warn("Densify: select a polygon layer and/or a fault layer.")
+            return
+        try:
+            spacing = float(self.dockwidget.lineEdit_densify_spacing.text())
+        except ValueError:
+            spacing = 0.0
+        if spacing <= 0:
+            self._warn("Densify: the node spacing must be a number of metres above zero.")
+            return
+        gdfs = []
+        for layer in layers:
+            path = self._resolved_source(layer)
+            if not os.path.exists(path):
+                self._warn("Sorry, only layers saved to disk as a shapefile can be processed!")
+                return
+            gdfs.append(gpd.read_file(path))
+        geographic = any(l.crs().isGeographic() for l in layers)
+        results, stats = densify_layers(
+            gdfs, spacing, geographic=geographic,
+            node_crossings=self.dockwidget.checkBox_densify_crossings.isChecked())
+        tag = f"_dense_{spacing:g}"
+        for layer, gdf in zip(layers, results):
+            out_path = self._save_gdf(gdf, self._make_output_path(layer, tag))
+            self._add_layer_with_style(QgsVectorLayer(out_path, layer.name() + tag, "ogr"), layer,
+                                       layer.name() + tag)
+        self._warn(
+            f"Densified to {spacing:g} m: {stats['vertices_in']} -> {stats['vertices_out']} vertices"
+            + (f"; {stats['nodes_added_at_crossings']} shared nodes added where features cross"
+               if stats.get('nodes_added_at_crossings') else "")
+            + (f"; {stats['vertices_welded']} near-coincident vertices welded"
+               if stats.get('vertices_welded') else "") + ".",
+            level=MSG_SUCCESS, duration=15)
 
     def updateMapsFields(self):
         """Update the fields in the maps layer combo box when a new layer is selected."""
@@ -1973,7 +2042,7 @@ class GeoSubSampler:
             "Fault polyline layer selected for processing"
         )
         self.dockwidget.pushButton_merge_segments.setToolTip(
-            "Merge connected polylines\nWARNING: VERY SLOW FOR LARGE DATASETS (>1s per object)"
+            "Merge connected polylines\nAbout half a second for 1,400 faults; larger sets scale roughly in proportion"
         )
         self.dockwidget.lineEdit_merge_tolerance.setToolTip(
             "Minimum distance between end points"
@@ -2000,6 +2069,10 @@ class GeoSubSampler:
             "Add stratigraphic offset data to faults\n"
             "Requires both fault and map polygon layers\n"
             "as well as Geology Map Priority Codes (see below) to be defined\n"
+            "The units either side of the fault are read at every point where the fault crosses a\n"
+            "geological contact (start/middle/end for faults that meet none). Adds the maximum\n"
+            "offset level, how many samples were used (n_samples) and how many showed an offset\n"
+            "(n_offset), and saves the sample points as *_stratOffset_samples.\n"
             "Does not filter data, just adds Strat Offset attributes"
         )
         self.dockwidget.pushButton_process_faults.setToolTip(
@@ -2020,6 +2093,19 @@ class GeoSubSampler:
         )
         self.dockwidget.lineEdit_area_tolerance.setToolTip(
             "Tolerance for area-based filtering, in m2"
+        )
+        self.dockwidget.lineEdit_densify_spacing.setToolTip(
+            "Largest distance between nodes, in metres (degrees are converted approximately).\n"
+            "Every segment is divided into equal parts no longer than this."
+        )
+        self.dockwidget.checkBox_densify_crossings.setToolTip(
+            "Also add a node, shared by both, where a fault or polygon boundary crosses a polygon\n"
+            "boundary, and where a vertex lies on another feature's segment (T-junction)."
+        )
+        self.dockwidget.pushButton_densify.setToolTip(
+            "Add nodes along the selected polygon and fault layers. New nodes on a shared boundary\n"
+            "are identical in the polygon on each side and in any fault running along it.\n"
+            "Shapes do not change. Vertices closer than 1 micrometre are first merged."
         )
         self.dockwidget.pushButton_simplifyMap.setToolTip(
             "Simplify map polygons based on area tolerance, respecting fault topology"
@@ -2105,6 +2191,9 @@ class GeoSubSampler:
                 self._guard(self.topferPillewizer, "Töpfer & Pillewizer scaling"))
             self.dockwidget.pushButton_simplifyMap.clicked.connect(
                 self._guard(self.simplifyMap, "Map simplification")
+            )
+            self.dockwidget.pushButton_densify.clicked.connect(
+                self._guard(self.densify, "Densify nodes")
             )
             self.dockwidget.mFieldComboBox_dip.setAllowEmptyFieldName(True)
             self.dockwidget.mFieldComboBox_dip.setCurrentIndex(0)

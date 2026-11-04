@@ -63,6 +63,7 @@ from math import sin, cos, asin, atan, atan2, degrees, radians, sqrt, acos, pi
 import geopandas as gpd
 import pandas as pd
 import numpy as np
+import shapely
 from pandas.errors import EmptyDataError
 from shapely.geometry import Point, LineString
 from shapely.ops import unary_union
@@ -354,6 +355,71 @@ class SubsamplingEngine:
     # Compute the mean orientation vector for measurements within each cell.
     # =========================================================================
 
+    # =========================================================================
+    # ARRAY HELPERS FOR THE GRID-CELL METHODS
+    # The grid-cell methods work on plain numpy arrays sorted by cell: no pandas work
+    # is done per cell (that was most of their run time).
+    # =========================================================================
+
+    def _grid_groups(self, gdf, minx, maxx, miny, maxy, n):
+        """
+        Bin the measurements into grid cells.  Returns a dict of arrays sorted by cell
+        (cells in the same order as ``groupby(['_cx', '_cy'])``, measurements within a cell
+        in their original order): ``X`` direction cosines (n, 3), ``e`` / ``n`` coordinates,
+        ``labels`` original index labels, and ``starts`` / ``ends`` of each cell.
+        Measurements outside the bounds or with a null dip / dip direction are left out.
+        """
+        e = np.asarray(gdf[self.easting], dtype=float)
+        nn = np.asarray(gdf[self.northing], dtype=float)
+        dip = np.asarray(gdf[self.dip], dtype=float)
+        dd = np.asarray(gdf[self.dipdir], dtype=float)
+        ok = ((e >= minx) & (e < maxx) & (nn >= miny) & (nn < maxy)
+              & np.isfinite(dip) & np.isfinite(dd))
+        labels = np.asarray(gdf.index)[ok]
+        e, nn = e[ok], nn[ok]
+        dip_r, dd_r = np.radians(dip[ok]), np.radians(dd[ok])
+        X = np.stack([np.sin(dip_r) * np.sin(dd_r),       # east
+                      np.sin(dip_r) * np.cos(dd_r),       # north
+                      np.cos(dip_r)], axis=1)             # down
+        cx = ((e - minx) / n).astype(np.int64)
+        cy = ((nn - miny) / n).astype(np.int64)
+        order = np.lexsort((cy, cx))                      # stable: original order inside a cell
+        cx, cy = cx[order], cy[order]
+        if len(cx):
+            starts = np.flatnonzero(np.r_[True, (cx[1:] != cx[:-1]) | (cy[1:] != cy[:-1])])
+            ends = np.r_[starts[1:], len(cx)]
+        else:
+            starts = ends = np.zeros(0, dtype=np.int64)
+        return {'X': X[order], 'e': e[order], 'n': nn[order], 'labels': labels[order],
+                'starts': starts, 'ends': ends}
+
+    @staticmethod
+    def _orientation_from_sums(l_sum, m_sum, n_sum, count):
+        """(dip, dipdir) of the vector mean given the component sums - as :meth:`_calc_mean_orientation`."""
+        r_bar = sqrt(float((l_sum / count)**2 + (m_sum / count)**2 + (n_sum / count)**2))
+        if r_bar < 1e-12:
+            return (float('nan'), float('nan'))
+        return dircos2ddd((l_sum / count) / r_bar, (m_sum / count) / r_bar, (n_sum / count) / r_bar)
+
+    @staticmethod
+    def _cell_sums(X, starts):
+        """Per-cell sum of the direction cosines (K, 3) and of their outer products (K, 3, 3)."""
+        sums = np.add.reduceat(X, starts, axis=0) + 0.0
+        x, y, z = X[:, 0], X[:, 1], X[:, 2]
+        comp = [np.add.reduceat(v, starts) for v in (x * x, x * y, x * z, y * y, y * z, z * z)]
+        T = np.empty((len(starts), 3, 3))
+        T[:, 0, 0], T[:, 0, 1], T[:, 0, 2] = comp[0], comp[1], comp[2]
+        T[:, 1, 0], T[:, 1, 1], T[:, 1, 2] = comp[1], comp[3], comp[4]
+        T[:, 2, 0], T[:, 2, 1], T[:, 2, 2] = comp[2], comp[4], comp[5]
+        return sums, T
+
+    def _kappa_beta_of(self, X):
+        """Kent (kappa, beta) of one set of direction cosines X (n, 3), as :meth:`_calc_kent`."""
+        n = len(X)
+        k, b = self._kent_kappa_batch(n, X.mean(axis=0)[None, :], (X.T @ X / n)[None, :, :],
+                                      return_beta=True)
+        return float(k[0]), float(b[0])
+
     def gridcell_average(self, gpdataframe, minx, maxx, miny, maxy,
                          n=1000, path_out='outputs/'):
         """
@@ -379,15 +445,8 @@ class SubsamplingEngine:
         measurements averaged in the cell).  Pass this to
         :func:`save_grid_to_shapefile` to produce a point shapefile.
         """
-        df = self._add_direction_cosines(gpdataframe)
-
-        # Bin each point directly to its cell — O(n_points), not O(n_cells × n_points)
-        df = df[
-            (df[self.easting]  >= minx) & (df[self.easting]  < maxx) &
-            (df[self.northing] >= miny) & (df[self.northing] < maxy)
-        ].copy()
-        df['_cx'] = ((df[self.easting]  - minx) / n).astype(np.int64)
-        df['_cy'] = ((df[self.northing] - miny) / n).astype(np.int64)
+        gr = self._grid_groups(gpdataframe, minx, maxx, miny, maxy, n)
+        e, nn, starts, ends = gr['e'], gr['n'], gr['starts'], gr['ends']
 
         file = f"structure_file_gridcell_{n}"
         fieldnames = ['EASTING', 'NORTHING', 'DIP', 'DIP_DIR', 'count']
@@ -395,18 +454,23 @@ class SubsamplingEngine:
         with open(os.path.join(path_out, file + ".csv"), "w",
                   encoding="utf-8") as out:
             out.write(','.join(fieldnames) + '\n')
-            for (cx, cy), group in df.groupby(['_cx', '_cy']):
-                # Output at the mean position of the input points, not the cell
-                # centre, so a single point in a cell stays where it was.
-                centx = float(group[self.easting].mean())
-                centy = float(group[self.northing].mean())
-                dip_val, dipdir_val = self._calc_mean_orientation(group)
-                dip_str    = ('NaN' if math.isnan(dip_val)
-                              else str(int(dip_val)))
-                dipdir_str = ('NaN' if math.isnan(dipdir_val)
-                              else str(int(dipdir_val)))
-                out.write(f"{centx:.8f},{centy:.8f},"
-                          f"{dip_str},{dipdir_str},{len(group)}\n")
+            if len(starts):
+                counts = ends - starts
+                sums = np.add.reduceat(gr['X'], starts, axis=0) + 0.0
+                for k in range(len(starts)):
+                    s, t_ = starts[k], ends[k]
+                    # Output at the mean position of the input points, not the cell
+                    # centre, so a single point in a cell stays where it was.
+                    centx = float(e[s:t_].mean())
+                    centy = float(nn[s:t_].mean())
+                    dip_val, dipdir_val = self._orientation_from_sums(
+                        sums[k, 0], sums[k, 1], sums[k, 2], int(counts[k]))
+                    dip_str    = ('NaN' if math.isnan(dip_val)
+                                  else str(int(dip_val)))
+                    dipdir_str = ('NaN' if math.isnan(dipdir_val)
+                                  else str(int(dipdir_val)))
+                    out.write(f"{centx:.8f},{centy:.8f},"
+                              f"{dip_str},{dipdir_str},{int(counts[k])}\n")
         return file
 
     def count_cells(self, gpdataframe, minx, maxx, miny, maxy, n, min_points=1):
@@ -475,15 +539,8 @@ class SubsamplingEngine:
         ``structure_file_spherical_{n}`` without filter,
         ``structure_file_spherical_kappa{kappa_min}_{n}`` with filter.
         """
-        df = self._add_direction_cosines(gpdataframe)
-
-        # Bin each point directly to its cell - O(n_points), not O(n_cells x n_points)
-        df = df[
-            (df[self.easting]  >= minx) & (df[self.easting]  < maxx) &
-            (df[self.northing] >= miny) & (df[self.northing] < maxy)
-        ].copy()
-        df['_cx'] = ((df[self.easting]  - minx) / n).astype(np.int64)
-        df['_cy'] = ((df[self.northing] - miny) / n).astype(np.int64)
+        gr = self._grid_groups(gpdataframe, minx, maxx, miny, maxy, n)
+        e, nn, starts, ends = gr['e'], gr['n'], gr['starts'], gr['ends']
 
         file = (f"structure_file_spherical_{n}" if kappa_min is None
                 else f"structure_file_spherical_kappa{kappa_min:g}_{n}")
@@ -493,20 +550,26 @@ class SubsamplingEngine:
         with open(os.path.join(path_out, file + ".csv"), "w",
                   encoding="utf-8") as out:
             out.write(','.join(fieldnames) + '\n')
-            for (cx, cy), group in df.groupby(['_cx', '_cy']):
-                count, kappa, beta = self._calc_kent(group)
-                if kappa_min is not None and not (
-                        np.isfinite(kappa) and kappa >= kappa_min):
-                    continue
-                dip2, dipdir2 = self._calc_mean_orientation(group)
-                if math.isnan(dip2) or math.isnan(dipdir2):
-                    continue
-                # Mean position of the input points (see gridcell_average)
-                centx = float(group[self.easting].mean())
-                centy = float(group[self.northing].mean())
-                out.write(f"{centx:.8f},{centy:.8f},"
-                          f"{int(dip2)},{int(dipdir2)},{int(count)},"
-                          f"{self._fmt_kent(kappa)},{self._fmt_kent(beta)}\n")
+            if len(starts):
+                counts = ends - starts
+                sums, T = self._cell_sums(gr['X'], starts)       # all cells at once
+                kappa, beta = self._kent_kappa_batch(
+                    counts, sums / counts[:, None], T / counts[:, None, None], return_beta=True)
+                for k in range(len(starts)):
+                    if kappa_min is not None and not (
+                            np.isfinite(kappa[k]) and kappa[k] >= kappa_min):
+                        continue
+                    dip2, dipdir2 = self._orientation_from_sums(
+                        sums[k, 0], sums[k, 1], sums[k, 2], int(counts[k]))
+                    if math.isnan(dip2) or math.isnan(dipdir2):
+                        continue
+                    s, t_ = starts[k], ends[k]
+                    # Mean position of the input points (see gridcell_average)
+                    centx = float(e[s:t_].mean())
+                    centy = float(nn[s:t_].mean())
+                    out.write(f"{centx:.8f},{centy:.8f},"
+                              f"{int(dip2)},{int(dipdir2)},{int(counts[k])},"
+                              f"{self._fmt_kent(kappa[k])},{self._fmt_kent(beta[k])}\n")
         return file
 
     # =========================================================================
@@ -515,12 +578,12 @@ class SubsamplingEngine:
     # =========================================================================
 
     @staticmethod
-    def _kent_kappa_batch(count, xbar, S):
+    def _kent_kappa_batch(count, xbar, S, return_beta=False):
         """
-        Kent kappa for a batch of cells, from their sufficient statistics.
+        Kent kappa (and optionally beta) for a batch of sets, from their sufficient statistics.
 
-        The same estimator as :meth:`_calc_kent`, vectorised so that the kappa
-        of many sub-sets can be computed in one go (used for leave-one-out).
+        The same estimator as :meth:`_calc_kent`, vectorised so that the kappa of many
+        sets can be computed in one go (cells, leave-one-out sets, ...).
 
         Parameters
         ----------
@@ -530,38 +593,84 @@ class SubsamplingEngine:
 
         Returns
         -------
-        Array (m,) of kappa; ``inf`` where undefined for a finite reason
-        (fewer than 2 measurements, identical measurements, or a non-positive
-        denominator) and ``nan`` where the resultant vector cancels - exactly the
-        conventions of :meth:`_calc_kent`.
+        kappa (m,), or (kappa, beta) with ``return_beta``.  ``inf`` where undefined for a
+        finite reason (fewer than 2 measurements, identical measurements, or a
+        non-positive denominator; beta is then ``nan``) and ``nan`` where the resultant
+        vector cancels - exactly the conventions of :meth:`_calc_kent`.
         """
         m = xbar.shape[0]
         count = np.broadcast_to(np.asarray(count), (m,))
         r1 = np.sqrt((xbar ** 2).sum(axis=1))
         kappa = np.full(m, np.inf)
+        beta = np.full(m, np.nan)
         kappa[(r1 < 1e-12) & (count >= 2)] = np.nan
         ok = (count >= 2) & (r1 < 1 - 1e-12) & (r1 >= 1e-12)
         if not ok.any():
-            return kappa
+            return (kappa, beta) if return_beta else kappa
         xb, S_, r = xbar[ok], S[ok], r1[ok]
         g = xb / r[:, None]
         theta = np.arccos(np.clip(g[:, 2], -1.0, 1.0))
         phi = np.arctan2(g[:, 1], g[:, 0])
         ct, st, cp, sp = np.cos(theta), np.sin(theta), np.cos(phi), np.sin(phi)
-        z = np.zeros_like(ct)
-        H = np.stack([np.stack([ct * cp, -sp, st * cp], axis=1),
-                      np.stack([ct * sp,  cp, st * sp], axis=1),
-                      np.stack([-st,       z, ct], axis=1)], axis=1)
-        B = np.einsum('mji,mjk,mkl->mil', H, S_, H)            # H^T S H
-        psi = 0.5 * np.arctan2(2 * B[:, 0, 1], B[:, 0, 0] - B[:, 1, 1])
-        cs, sn, one = np.cos(psi), np.sin(psi), np.ones_like(psi)
-        zz = np.zeros_like(psi)
-        K = np.stack([np.stack([cs, -sn, zz], axis=1),
-                      np.stack([sn,  cs, zz], axis=1),
-                      np.stack([zz,  zz, one], axis=1)], axis=1)
-        G = H @ K
-        V = np.einsum('mji,mjk,mkl->mil', G, S_, G)            # G^T S G
-        r2 = V[:, 0, 0] - V[:, 1, 1]
+        # H maps the mean direction to z; only its first two columns h1, h2 are needed
+        h1 = np.stack([ct * cp, ct * sp, -st], axis=1)
+        h2 = np.stack([-sp, cp, np.zeros_like(cp)], axis=1)
+        S1, S2 = np.einsum('mij,mj->mi', S_, h1), np.einsum('mij,mj->mi', S_, h2)
+        b00 = (h1 * S1).sum(axis=1)
+        b01 = (h1 * S2).sum(axis=1)
+        b11 = (h2 * S2).sum(axis=1)
+        psi = 0.5 * np.arctan2(2 * b01, b00 - b11)            # sword angle
+        c, s_ = np.cos(psi), np.sin(psi)
+        v00 = b00 * c * c + 2 * b01 * c * s_ + b11 * s_ * s_
+        v11 = b00 * s_ * s_ - 2 * b01 * c * s_ + b11 * c * c
+        r2 = v00 - v11
+        d1 = 2 - 2 * r - r2
+        d2 = 2 - 2 * r + r2
+        good = (d1 > 0) & (d2 > 0)
+        k = np.full(len(r), np.inf)
+        b = np.full(len(r), np.nan)
+        k[good] = 1 / d1[good] + 1 / d2[good]
+        b[good] = 0.5 * (1 / d1[good] - 1 / d2[good])
+        kappa[ok] = k
+        beta[ok] = b
+        return (kappa, beta) if return_beta else kappa
+
+    def _loo_kappas(self, X):
+        """
+        Kent kappa of the cell with each measurement left out in turn (X: (n, 3)).
+
+        The same estimator as :meth:`_kent_kappa_batch`, but evaluated without building a
+        scatter matrix per left-out set: the quadratic forms of the reduced scatter matrix
+        are the quadratic forms of the full one minus the left-out point's own contribution.
+        """
+        n = len(X)
+        m = n - 1
+        kappa = np.full(n, np.inf)
+        if m < 2:
+            return kappa
+        total = X.sum(axis=0)
+        T = X.T @ X
+        xbar = (total - X) / m
+        r1 = np.sqrt((xbar ** 2).sum(axis=1))
+        kappa[r1 < 1e-12] = np.nan
+        ok = (r1 < 1 - 1e-12) & (r1 >= 1e-12)
+        if not ok.any():
+            return kappa
+        x, xb, r = X[ok], xbar[ok], r1[ok]
+        g = xb / r[:, None]
+        theta = np.arccos(np.clip(g[:, 2], -1.0, 1.0))
+        phi = np.arctan2(g[:, 1], g[:, 0])
+        ct, st, cp, sp = np.cos(theta), np.sin(theta), np.cos(phi), np.sin(phi)
+        h1 = np.stack([ct * cp, ct * sp, -st], axis=1)
+        h2 = np.stack([-sp, cp, np.zeros_like(cp)], axis=1)
+        Th1, Th2 = h1 @ T, h2 @ T
+        p1, p2 = (x * h1).sum(axis=1), (x * h2).sum(axis=1)
+        b00 = ((h1 * Th1).sum(axis=1) - p1 * p1) / m
+        b01 = ((h2 * Th1).sum(axis=1) - p1 * p2) / m
+        b11 = ((h2 * Th2).sum(axis=1) - p2 * p2) / m
+        psi = 0.5 * np.arctan2(2 * b01, b00 - b11)            # sword angle
+        c, s_ = np.cos(psi), np.sin(psi)
+        r2 = (b00 * c * c + 2 * b01 * c * s_ + b11 * s_ * s_) - (b00 * s_ * s_ - 2 * b01 * c * s_ + b11 * c * c)
         d1 = 2 - 2 * r - r2
         d2 = 2 - 2 * r + r2
         good = (d1 > 0) & (d2 > 0)
@@ -570,16 +679,7 @@ class SubsamplingEngine:
         kappa[ok] = k
         return kappa
 
-    def _loo_kappas(self, X):
-        """Kent kappa of the cell with each measurement left out in turn (X: (n, 3))."""
-        n = len(X)
-        total = X.sum(axis=0)
-        T = X.T @ X
-        xbar = (total - X) / (n - 1)
-        S = (T[None, :, :] - X[:, :, None] * X[:, None, :]) / (n - 1)
-        return self._kent_kappa_batch(n - 1, xbar, S)
-
-    def _iterative_outliers(self, grid, min_keep, break_ratio):
+    def _iterative_outliers(self, X, min_keep, break_ratio):
         """
         Outliers of one cell by repeated leave-one-out removal with a break rule.
 
@@ -594,16 +694,15 @@ class SubsamplingEngine:
         and only if that gain is at least ``break_ratio`` times the median gain
         of the other steps; otherwise nothing is removed.
 
-        Returns the list of index labels to remove (possibly empty).
+        ``X`` is the (n, 3) array of direction cosines of the cell.  Returns the list
+        of row positions (into X) to remove, in removal order (possibly empty).
         """
-        # Work on plain arrays: all leave-one-out kappas of a set are computed at once
-        X = np.array(grid['vector'].tolist(), dtype=float)
-        labels = list(grid.index)
-        active = np.arange(len(X))
+        n = len(X)
+        active = np.arange(n)
         k_prev = float(self._kent_kappa_batch(
-            len(X), X.mean(axis=0)[None, :], (X.T @ X / len(X))[None, :, :])[0])
-        seq = []                                # (index label removed, relative kappa gain)
-        max_remove = len(grid) // 2
+            n, X.mean(axis=0)[None, :], (X.T @ X / n)[None, :, :])[0])
+        seq = []                                # (position removed, relative kappa gain)
+        max_remove = n // 2
         while len(seq) < max_remove and np.isfinite(k_prev) and k_prev > 0:
             if seq and len(active) <= min_keep:
                 break
@@ -612,7 +711,7 @@ class SubsamplingEngine:
             j = int(np.argmax(kap))
             if not np.isfinite(kap[j]):
                 break                           # kappa undefined for everything left
-            seq.append((labels[active[j]], (kap[j] - k_prev) / k_prev))
+            seq.append((int(active[j]), (kap[j] - k_prev) / k_prev))
             k_prev = float(kap[j])
             active = np.delete(active, j)
         if not seq:
@@ -624,7 +723,7 @@ class SubsamplingEngine:
         others = gains[:best_i] + gains[best_i + 1:]
         if others and gains[best_i] < break_ratio * max(float(np.median(others)), 0.05):
             return []                           # no jump stands out from the noise
-        return [idx for idx, _ in seq[:best_i + 1]]
+        return [pos for pos, _ in seq[:best_i + 1]]
 
     def outlier_removal(self, gdf, minx, maxx, miny, maxy,
                         n=1000, min_for_outlier=3, path_out='outputs/',
@@ -678,15 +777,9 @@ class SubsamplingEngine:
         beta of the kept measurements (-998 if undefined), REMOVED_INDEX
         (index of the first removed measurement, -1 if none) and n_removed.
         """
-        df = self._add_direction_cosines(gdf)
-
-        # Bin each point directly to its cell - O(n_points), not O(n_cells x n_points)
-        df = df[
-            (df[self.easting]  >= minx) & (df[self.easting]  < maxx) &
-            (df[self.northing] >= miny) & (df[self.northing] < maxy)
-        ].copy()
-        df['_cx'] = ((df[self.easting]  - minx) / n).astype(np.int64)
-        df['_cy'] = ((df[self.northing] - miny) / n).astype(np.int64)
+        gr = self._grid_groups(gdf, minx, maxx, miny, maxy, n)
+        X, e, nn, labels = gr['X'], gr['e'], gr['n'], gr['labels']
+        starts, ends = gr['starts'], gr['ends']
 
         file     = (f"structure_file_outlier_iterative_{n}" if iterative
                     else f"structure_file_outlier_{n}")
@@ -696,37 +789,39 @@ class SubsamplingEngine:
             out.write("EASTING,NORTHING,DIP,DIP_DIR,"
                       "count,kappa,beta,REMOVED_INDEX,n_removed\n")
 
-            for (cx, cy), grid in df.groupby(['_cx', '_cy']):
+            for s, t_ in zip(starts, ends):
+                Xc = X[s:t_]
                 removed = []
-                final_grid = grid
-                if len(grid) >= min_for_outlier and not iterative:
-                    X = np.array(grid['vector'].tolist(), dtype=float)
-                    k0 = float(self._kent_kappa_batch(
-                        len(X), X.mean(axis=0)[None, :],
-                        (X.T @ X / len(X))[None, :, :])[0])
+                if len(Xc) >= min_for_outlier and not iterative:
+                    k0, _ = self._kappa_beta_of(Xc)
                     if np.isfinite(k0):
-                        deltas = self._loo_kappas(X) - k0       # all leave-one-out at once
+                        deltas = self._loo_kappas(Xc) - k0      # all leave-one-out at once
                         deltas = np.where(np.isnan(deltas), -np.inf, deltas)
                         j = int(np.argmax(deltas))
                         if deltas[j] > 0:
-                            removed = [grid.index[j]]
-                            final_grid = grid.drop(index=grid.index[j])
-                elif len(grid) >= min_for_outlier:
-                    removed = self._iterative_outliers(grid, min_for_outlier, break_ratio)
-                    final_grid = grid.drop(index=removed) if removed else grid
-                removed_idx = removed[0] if removed else None
-
-                dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
+                            removed = [j]
+                elif len(Xc) >= min_for_outlier:
+                    removed = self._iterative_outliers(Xc, min_for_outlier, break_ratio)
+                if removed:
+                    keep = np.ones(len(Xc), dtype=bool)
+                    keep[removed] = False
+                else:
+                    keep = slice(None)
+                Xf = Xc[keep]
+                sums = Xf.sum(axis=0) + 0.0
+                dip_f, dipdir_f = self._orientation_from_sums(
+                    sums[0], sums[1], sums[2], len(Xf))
                 if math.isnan(dip_f) or math.isnan(dipdir_f):
                     continue
-                count, kappa, beta = self._calc_kent(final_grid)
+                kappa, beta = self._kappa_beta_of(Xf)
                 # Mean position of the retained points, not the cell centre
-                centx = float(final_grid[self.easting].mean())
-                centy = float(final_grid[self.northing].mean())
+                centx = float(e[s:t_][keep].mean())
+                centy = float(nn[s:t_][keep].mean())
+                first = labels[s + removed[0]] if removed else -1
                 out.write(f"{centx:.8f},{centy:.8f},{int(dip_f)},{int(dipdir_f)},"
-                          f"{count},{self._fmt_kent(kappa)},"
+                          f"{len(Xf)},{self._fmt_kent(kappa)},"
                           f"{self._fmt_kent(beta)},"
-                          f"{-1 if removed_idx is None else removed_idx},"
+                          f"{first},"
                           f"{len(removed)}\n")
 
         return file
@@ -772,17 +867,9 @@ class SubsamplingEngine:
         Carmichael, T. & Ailleres, L. (2016). Method and analysis for the
         upscaling of structural data. Journal of Structural Geology, 83, 121-133.
         """
-        df = self._add_direction_cosines(gdf)
-
-        # Bin each point directly to its cell - O(n_points), not O(n_cells x n_points)
-        df = df[
-            (df[self.easting]  >= minx) & (df[self.easting]  < maxx) &
-            (df[self.northing] >= miny) & (df[self.northing] < maxy)
-        ].copy()
-        df['_cx'] = ((df[self.easting]  - minx) / n).astype(np.int64)
-        df['_cy'] = ((df[self.northing] - miny) / n).astype(np.int64)
-        df[['dc_l', 'dc_m', 'dc_n']] = pd.DataFrame(
-            df['vector'].tolist(), index=df.index)
+        gr = self._grid_groups(gdf, minx, maxx, miny, maxy, n)
+        X, e, nn = gr['X'], gr['e'], gr['n']
+        starts, ends = gr['starts'], gr['ends']
 
         file     = f"structure_file_outlier_carmichael_{n}"
         csv_path = os.path.join(path_out, f"{file}.csv")
@@ -791,42 +878,38 @@ class SubsamplingEngine:
             out.write("EASTING,NORTHING,DIP,DIP_DIR,"
                       "count,kappa,beta,n_removed\n")
 
-            for (cx, cy), grid in df.groupby(['_cx', '_cy']):
-                N = len(grid)
+            for s, t_ in zip(starts, ends):
+                N = t_ - s
                 if N <= 3:
                     continue            # too few measurements to define an outlier
+                P = X[s:t_]
 
                 # Cell mean direction as a unit vector
-                l_s = float(grid['dc_l'].sum())
-                m_s = float(grid['dc_m'].sum())
-                n_s = float(grid['dc_n'].sum())
+                l_s, m_s, n_s = (float(v) for v in P.sum(axis=0) + 0.0)
                 g_len = sqrt(l_s**2 + m_s**2 + n_s**2)
                 if g_len < 1e-12:
                     continue            # antipodal vectors cancel: no mean direction
                 mean_vec = np.array([l_s / g_len, m_s / g_len, n_s / g_len])
 
                 # Rank points by angular distance from the mean (farthest first)
-                vecs = grid[['dc_l', 'dc_m', 'dc_n']].values.astype(float)
-                dots = np.clip(vecs @ mean_vec, -1.0, 1.0)
+                dots = np.clip(P @ mean_vec, -1.0, 1.0)
                 ang_dists = np.degrees(np.arccos(dots))
-                ranked_indices = list(grid.index[np.argsort(ang_dists)[::-1]])
+                rank = np.argsort(ang_dists)[::-1]
 
-                # Build the kappa sequence: remove one point at a time
-                _, k_prev, _ = self._calc_kent(grid)
-                max_remove = N // 2
-                delta_seq  = []
-                remaining  = list(grid.index)
-
-                for i in range(max_remove):
-                    remaining.remove(ranked_indices[i])
-                    temp = grid.loc[remaining]
-                    _, k_t, _ = self._calc_kent(temp)
-                    # kappa is undefined (inf/nan) for one or identical
-                    # measurements: such steps cannot define the break
-                    delta_seq.append(k_t - k_prev
-                                     if np.isfinite(k_t) and np.isfinite(k_prev)
-                                     else float('nan'))
-                    k_prev = k_t
+                # Kappa after removing the 0, 1, ..., N//2 farthest points - all sets at once
+                # from suffix sums (sfx[i] = sum of the points ranked i and beyond)
+                m_rem = N // 2
+                Pr = P[rank]
+                sfx = np.cumsum(Pr[::-1], axis=0)[::-1]
+                outer = Pr[:, :, None] * Pr[:, None, :]
+                sfx_T = np.cumsum(outer[::-1], axis=0)[::-1]
+                cnt = N - np.arange(m_rem + 1)
+                kap = self._kent_kappa_batch(
+                    cnt, sfx[:m_rem + 1] / cnt[:, None], sfx_T[:m_rem + 1] / cnt[:, None, None])
+                # kappa is undefined (inf/nan) for one or identical measurements:
+                # such steps cannot define the break
+                k_prev, k_t = kap[:-1], kap[1:]
+                delta_seq = np.where(np.isfinite(k_t) & np.isfinite(k_prev), k_t - k_prev, np.nan)
 
                 # Find the delta-kappa break (finite steps only)
                 if np.all(np.isnan(delta_seq)):
@@ -837,24 +920,24 @@ class SubsamplingEngine:
 
                 if best_delta <= 0:
                     # No removal improves concentration - retain all points
-                    n_removed  = 0
-                    final_grid = grid
+                    n_removed = 0
+                    keep = slice(None)
                 else:
-                    n_removed   = best_i + 1
-                    outlier_set = set(ranked_indices[:n_removed])
-                    kept        = [idx for idx in grid.index
-                                   if idx not in outlier_set]
-                    final_grid  = grid.loc[kept]
-
-                dip_f, dipdir_f = self._calc_mean_orientation(final_grid)
+                    n_removed = best_i + 1
+                    keep = np.ones(N, dtype=bool)
+                    keep[rank[:n_removed]] = False
+                Xf = P[keep]
+                sums = Xf.sum(axis=0) + 0.0
+                dip_f, dipdir_f = self._orientation_from_sums(
+                    sums[0], sums[1], sums[2], len(Xf))
                 if math.isnan(dip_f) or math.isnan(dipdir_f):
                     continue
-                count, kappa_f, beta_f = self._calc_kent(final_grid)
+                kappa_f, beta_f = self._kappa_beta_of(Xf)
                 # Mean position of the retained points, not the cell centre
-                centx = float(final_grid[self.easting].mean())
-                centy = float(final_grid[self.northing].mean())
+                centx = float(e[s:t_][keep].mean())
+                centy = float(nn[s:t_][keep].mean())
                 out.write(f"{centx:.8f},{centy:.8f},{int(dip_f)},{int(dipdir_f)},"
-                          f"{count},{self._fmt_kent(kappa_f)},"
+                          f"{len(Xf)},{self._fmt_kent(kappa_f)},"
                           f"{self._fmt_kent(beta_f)},{n_removed}\n")
 
         return file
@@ -903,68 +986,47 @@ class SubsamplingEngine:
         if gdf.crs is not None and contact_gdf.crs is not None:
             contact_gdf = contact_gdf.to_crs(gdf.crs)
 
-        contact_union = unary_union(contact_gdf.geometry)
+        # Contact segments and their azimuths, as arrays; nearest segment of every point from
+        # a spatial index (the distance to one big unioned contact geometry has no index and
+        # was by far the slowest step: ~90 s for 28,000 points against 146,000 contact vertices)
+        a, b, seg_az = _contact_segments(contact_gdf.geometry.values)
+        if len(a) == 0:
+            print("DataFrame Empty — no contact lines.")
+            return gdf.iloc[0:0].copy()
+        tree = shapely.STRtree(shapely.linestrings(np.stack([a, b], axis=1)))
+        idx, dist = tree.query_nearest(gdf.geometry.values, return_distance=True,
+                                       all_matches=True)
+        ip, isg = idx[0], idx[1]
+
+        # Several segments can be exactly as near (a shared contact is in the data twice, and a
+        # point can be equally near two segments meeting at a vertex): use the best-aligned one,
+        # so the result does not depend on the order of the data
+        strike = (gdf[self.dipdir].astype(float).values - 90) % 180
+        diff = np.abs(((seg_az[isg] - strike[ip] + 90) % 180) - 90)
+        dists = np.full(len(gdf), np.inf)
+        dists[ip] = dist
+        ang = np.full(len(gdf), np.inf)
+        np.minimum.at(ang, ip, np.where(np.isnan(diff), np.inf, diff))
 
         # Step 1: Distance filter
-        dists      = gdf.geometry.distance(contact_union)
-        candidates = gdf[dists <= dist_buffer].copy()
-        if candidates.empty:
+        near = dists <= dist_buffer
+        if not near.any():
             print("DataFrame Empty — no measurements within the distance buffer.")
-            return candidates
+            return gdf[near].copy()
 
-        # Step 2: Decompose contacts into per-segment azimuths
-        seg_gdf = _segment_azimuths(contact_gdf)
+        # Step 2: Angular filter (strike against the nearest contact segment)
+        passed = near & (ang <= angle_tol)
+        df_sub = gdf[passed].copy()
 
-        # Step 3: Nearest-segment join to get contact azimuth per point
-        cands_reset = candidates.reset_index(drop=False)
-
-        try:
-            joined = gpd.sjoin_nearest(
-                cands_reset[['index', 'geometry', self.dipdir]],
-                seg_gdf[['geometry', 'azimuth']],
-                how='left'
-            )
-            joined = joined.drop_duplicates(subset='index')
-
-            contact_az     = joined['azimuth'].values
-            bedding_strike = (joined[self.dipdir].astype(float).values - 90) % 180
-            diff = np.abs(((contact_az - bedding_strike + 90) % 180) - 90)
-            ang_diff = pd.Series(diff, index=joined['index'].values)
-            keep_orig_idx = joined.loc[diff <= angle_tol, 'index'].values
-            df_sub = candidates.loc[keep_orig_idx].copy()
-
-        except AttributeError:
-            # Fallback for GeoPandas < 0.10 without sjoin_nearest
-            seg_geoms  = seg_gdf.geometry.values
-            seg_az_arr = seg_gdf['azimuth'].values
-            contact_az = np.array([
-                seg_az_arr[np.argmin([pt.distance(s) for s in seg_geoms])]
-                for pt in candidates.geometry
-            ])
-            bedding_strike = (candidates[self.dipdir].astype(float).values
-                              - 90) % 180
-            diff   = np.abs(((contact_az - bedding_strike + 90) % 180) - 90)
-            ang_diff = pd.Series(diff, index=candidates.index)
-            df_sub = candidates[diff <= angle_tol].copy()
-
-            # Write outputs
-            """        if df_sub.empty:
-                        print("DataFrame Empty — no measurements pass the angle filter.")
-                    else:
-                        fname = (f"structure_file_firstorder"
-                                f"_d{int(dist_buffer)}_a{int(angle_tol)}")
-                        df_sub.to_file(os.path.join(path_out, fname + ".shp"),
-                                    driver='ESRI Shapefile')
-                        df_sub.to_csv(os.path.join(path_out, fname + ".csv"))
-            """
         # Optional cap: keep the best-ranked points (closest to a contact and
         # best aligned with it), giving an exact count with no iteration.
         self.last_firstorder_n_pass = len(df_sub)
         if max_points is not None and len(df_sub) > max_points:
             eps = 1e-12
-            score = (dists.loc[df_sub.index] / max(dist_buffer, eps)
-                     + ang_diff.loc[df_sub.index] / max(angle_tol, eps))
-            df_sub = df_sub.loc[score.nsmallest(int(max_points)).index]
+            score = (dists[passed] / max(dist_buffer, eps)
+                     + ang[passed] / max(angle_tol, eps))
+            best = np.argsort(score, kind='stable')[:int(max_points)]
+            df_sub = df_sub.iloc[best]
         return df_sub
 
     # =========================================================================
@@ -1228,6 +1290,30 @@ def export_shapefile(path_out, file):
 # PRIVATE HELPER — METHOD 6
 # =============================================================================
 
+def _contact_segments(geoms):
+    """
+    Split contact geometries (lines, rings or polygons) into individual segments.
+
+    Returns ``(a, b, azimuth)``: segment start points (n, 2), end points (n, 2) and the
+    azimuth of each segment in the range 0-180 degrees (strike convention: the direction
+    is ambiguous).  Fully vectorised.
+    """
+    parts = shapely.get_parts(np.asarray(geoms, dtype=object))
+    parts = parts[~shapely.is_missing(parts)]
+    types = shapely.get_type_id(parts)
+    polys = parts[types == 3]
+    lines = parts[(types == 1) | (types == 2)]
+    paths = np.concatenate([shapely.get_rings(polys), lines]) if len(polys) else lines
+    if len(paths) == 0:
+        empty = np.zeros((0, 2))
+        return empty, empty, np.zeros(0)
+    c, idx = shapely.get_coordinates(paths, return_index=True)
+    same = idx[:-1] == idx[1:]
+    a, b = c[:-1][same], c[1:][same]
+    az = (np.degrees(np.arctan2(b[:, 0] - a[:, 0], b[:, 1] - a[:, 1])) + 360) % 180
+    return a, b, az
+
+
 def _segment_azimuths(contact_gdf):
     """
     Decompose contact geometries into individual line segments with azimuths.
@@ -1244,21 +1330,10 @@ def _segment_azimuths(contact_gdf):
     -------
     GeoDataFrame with one row per segment, columns ``geometry`` and ``azimuth``.
     """
-    rows = []
-    for geom in contact_gdf.geometry:
-        if geom is None:
-            continue
-        lines = ([geom] if geom.geom_type in ('LineString', 'LinearRing')
-                 else list(geom.geoms))
-        for line in lines:
-            coords = list(line.coords)
-            for i in range(len(coords) - 1):
-                seg = LineString([coords[i], coords[i + 1]])
-                dx  = coords[i + 1][0] - coords[i][0]
-                dy  = coords[i + 1][1] - coords[i][1]
-                az  = (degrees(atan2(dx, dy)) + 360) % 180
-                rows.append({'geometry': seg, 'azimuth': az})
-    return gpd.GeoDataFrame(rows, crs=contact_gdf.crs)
+    a, b, az = _contact_segments(contact_gdf.geometry.values)
+    return gpd.GeoDataFrame({'azimuth': az},
+                            geometry=shapely.linestrings(np.stack([a, b], axis=1)) if len(a) else [],
+                            crs=contact_gdf.crs)
 
 
 # =============================================================================

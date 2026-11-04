@@ -1,5 +1,7 @@
+import numpy as np
 import pandas as pd
 import geopandas as gpd
+import shapely
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 
@@ -237,136 +239,91 @@ class StructuralPolygonSubSampler:
             
             return max_inherit_field
         
-        def find_best_merge_candidate_with_preferences(small_poly_idx, gdf_temp, distance_threshold,
-                                                    lithoname, strat1, strat2, strat3, strat4):
+        def find_merge_targets(frame, small_idx, distance_threshold,
+                               lithoname, strat1, strat2, strat3, strat4):
             """
-            Find the polygon that shares the most boundary length with the small polygon,
-            using hierarchical preferences for lithology and stratigraphy.
+            For every small polygon, the polygon it should merge into, using hierarchical
+            preferences for lithology and stratigraphy and the longest shared boundary.
+
+            All small polygons are handled together: one bulk spatial query finds every touching
+            pair, the shared boundary lengths of all pairs are computed in one go, and the
+            attribute rules then run on plain lists (no pandas row access per candidate).
+
+            Returns {small index: (target index, shared length, merge reason)}; polygons with no
+            neighbour sharing a boundary are left out.
             """
-            small_geom = gdf_temp.iloc[small_poly_idx].geometry
-            small_row = gdf_temp.iloc[small_poly_idx]
-            
-            # Get attribute values for the small polygon
-            small_litho = get_field_value(small_row, lithoname)
-            small_strat1 = get_field_value(small_row, strat1)
-            small_strat2 = get_field_value(small_row, strat2)
-            small_strat3 = get_field_value(small_row, strat3)
-            small_strat4 = get_field_value(small_row, strat4)
-            
-            # Get spatial index for efficient neighbor finding
-            sindex = gdf_temp.sindex
-            
-            # Find potential neighbors using bounding box intersection
-            possible_matches_index = list(sindex.intersection(small_geom.bounds))
-            
-            # Remove self from possible matches
-            possible_matches_index = [idx for idx in possible_matches_index if idx != small_poly_idx]
-            
-            # Collect candidates with their attributes and shared boundary lengths
-            candidates = []
-            
-            for idx in possible_matches_index:
-                candidate_geom = gdf_temp.iloc[idx].geometry
-                candidate_row = gdf_temp.iloc[idx]
-                
-                # Quick check: do bounding boxes actually intersect?
-                def bounds_intersect(geom1, geom2):
-                    """Check if two geometries' bounding boxes intersect."""
-                    bounds1 = geom1.bounds  # (minx, miny, maxx, maxy)
-                    bounds2 = geom2.bounds
-                    return not (bounds1[2] < bounds2[0] or bounds2[2] < bounds1[0] or 
-                            bounds1[3] < bounds2[1] or bounds2[3] < bounds1[1])
-                
-                if not bounds_intersect(small_geom, candidate_geom):
-                    continue
-                    
-                # More precise check: do geometries actually touch or intersect?
-                if not (small_geom.touches(candidate_geom) or small_geom.intersects(candidate_geom)):
-                    continue
-                
-                shared_length = calculate_shared_boundary_length(small_geom, candidate_geom, distance_threshold)
-                
-                if shared_length > 0:  # Only consider candidates with shared boundary
-                    # Get candidate attributes
-                    cand_litho = get_field_value(candidate_row, lithoname)
-                    cand_strat1 = get_field_value(candidate_row, strat1)
-                    cand_strat2 = get_field_value(candidate_row, strat2)
-                    cand_strat3 = get_field_value(candidate_row, strat3)
-                    cand_strat4 = get_field_value(candidate_row, strat4)
-                    
-                    candidates.append({
-                        'idx': idx,
-                        'is_tri': get_field_value(candidate_row, 'rec_type') == 'triangle',
-                        'shared_length': shared_length,
-                        'litho': cand_litho,
-                        'strat1': cand_strat1,
-                        'strat2': cand_strat2,
-                        'strat3': cand_strat3,
-                        'strat4': cand_strat4
-                    })
-            
-            if not candidates:
-                return None, 0, "no_neighbors"
+            geoms = frame.geometry.values
+            tree = shapely.STRtree(geoms)
+            si_l, ci = tree.query(geoms[small_idx], predicate='intersects')
+            si = small_idx[si_l]
+            keep = si != ci
+            si, ci = si[keep], ci[keep]
+            if len(si) == 0:
+                return {}
 
-            # Triangles come from triangulating an ignore-code polygon (e.g. a dyke)
-            # so its area can be shared out locally between the real units either
-            # side of it. If triangles were allowed to merge into each other first,
-            # a long thin dyke would chain into one piece and go entirely to
-            # whichever unit has most boundary, painting that unit across the
-            # dyke even where it crosses other units. So prefer real neighbours;
-            # only fall back to triangle neighbours when no real one is touching
-            # (such triangles are picked up on a later iteration).
-            real_candidates = [c for c in candidates if not c['is_tri']]
-            if real_candidates:
-                candidates = real_candidates
+            # shared boundary length of every touching pair
+            try:
+                bnd = shapely.boundary(geoms)
+                lengths = shapely.length(shapely.intersection(bnd[si], bnd[ci]))
+            except Exception:
+                # an invalid geometry makes the bulk call fail: do the pairs one by one, with
+                # the per-pair handling (buffer fallback) that always applied
+                lengths = np.array([calculate_shared_boundary_length(geoms[a], geoms[b], distance_threshold)
+                                    for a, b in zip(si, ci)], dtype=float)
+            has = lengths > 0
+            si, ci, lengths = si[has], ci[has], lengths[has]
+            order = np.lexsort((ci, si))
+            si, ci, lengths = si[order], ci[order], lengths[order]
 
-            # Apply hierarchical preferences
-            best_candidate = None
-            merge_reason = "fallback_boundary_length"
-            
-        
-            # Priority 1: Same strat1 + longest boundary
-            if  small_strat1 is not None:
-                strat1_matches = [c for c in candidates if c['strat1'] == small_strat1]
-                if strat1_matches:
-                    best_candidate = max(strat1_matches, key=lambda x: x['shared_length'])
-                    merge_reason = f"same_strat1_{small_strat1}"
-            
-            # Priority 2: Same strat2 + longest boundary
-            if best_candidate is None and small_strat2 is not None:
-                strat2_matches = [c for c in candidates if c['strat2'] == small_strat2]
-                if strat2_matches:
-                    best_candidate = max(strat2_matches, key=lambda x: x['shared_length'])
-                    merge_reason = f"same_strat2_{small_strat2}"
-            
-            # Priority 3: Same strat3 + longest boundary
-            if best_candidate is None and small_strat3 is not None:
-                strat3_matches = [c for c in candidates if c['strat3'] == small_strat3]
-                if strat3_matches:
-                    best_candidate = max(strat3_matches, key=lambda x: x['shared_length'])
-                    merge_reason = f"same_strat3_{small_strat3}"
-            
-            # Priority 4: Same strat4 + longest boundary
-            if best_candidate is None and small_strat4 is not None:
-                strat4_matches = [c for c in candidates if c['strat4'] == small_strat4]
-                if strat4_matches:
-                    best_candidate = max(strat4_matches, key=lambda x: x['shared_length'])
-                    merge_reason = f"same_strat4_{small_strat4}"
+            def attr(name):
+                if name is None or name not in frame.columns:
+                    return [None] * len(frame)
+                return [None if pd.isna(v) else str(v) for v in frame[name].values]
 
-            # Priority 5: Same lithology + longest boundary
-            if best_candidate is None and small_litho is not None:
-                litho_matches = [c for c in candidates if c['litho'] == small_litho]
-                if litho_matches:
-                    best_candidate = max(litho_matches, key=lambda x: x['shared_length'])
-                    merge_reason = f"same_lithology_{small_litho}"
-            
-            # Fallback: Longest boundary regardless of attributes
-            if best_candidate is None:
-                best_candidate = max(candidates, key=lambda x: x['shared_length'])
-                merge_reason = "fallback_boundary_length"
-            
-            return best_candidate['idx'], best_candidate['shared_length'], merge_reason
-        
+            litho_a = attr(lithoname)
+            strat_a = [attr(strat1), attr(strat2), attr(strat3), attr(strat4)]
+            rec_a = attr('rec_type') if 'rec_type' in frame.columns else [None] * len(frame)
+
+            targets = {}
+            starts = np.flatnonzero(np.r_[True, si[1:] != si[:-1]]) if len(si) else []
+            ends = np.r_[starts[1:], len(si)] if len(si) else []
+            for s0, s1_ in zip(starts, ends):
+                s = int(si[s0])
+                cands = ci[s0:s1_]
+                lens = lengths[s0:s1_]
+                # Triangles come from triangulating an ignore-code polygon (e.g. a dyke)
+                # so its area can be shared out locally between the real units either
+                # side of it. If triangles were allowed to merge into each other first,
+                # a long thin dyke would chain into one piece and go entirely to
+                # whichever unit has most boundary, painting that unit across the
+                # dyke even where it crosses other units. So prefer real neighbours;
+                # only fall back to triangle neighbours when no real one is touching
+                # (such triangles are picked up on a later iteration).
+                real = [k for k in range(len(cands)) if rec_a[cands[k]] != 'triangle']
+                use = real if real else list(range(len(cands)))
+
+                best, reason = None, "fallback_boundary_length"
+                # Priorities 1-4: same strat1..strat4 + longest boundary
+                for level, arr in enumerate(strat_a, 1):
+                    mine = arr[s]
+                    if best is None and mine is not None:
+                        match = [k for k in use if arr[cands[k]] == mine]
+                        if match:
+                            best = max(match, key=lambda k: lens[k])
+                            reason = f"same_strat{level}_{mine}"
+                # Priority 5: same lithology + longest boundary
+                if best is None and litho_a[s] is not None:
+                    match = [k for k in use if litho_a[cands[k]] == litho_a[s]]
+                    if match:
+                        best = max(match, key=lambda k: lens[k])
+                        reason = f"same_lithology_{litho_a[s]}"
+                # Fallback: longest boundary regardless of attributes
+                if best is None:
+                    best = max(use, key=lambda k: lens[k])
+                    reason = "fallback_boundary_length"
+                targets[s] = (int(cands[best]), float(lens[best]), reason)
+            return targets
+
         # Create a copy of the GeoDataFrame
         gdf_cleaned = gdf.copy()
         
@@ -405,25 +362,33 @@ class StructuralPolygonSubSampler:
         # overlapping its host (the shared boundary ring is gone, so the island
         # would have no merge candidate). Absorb such islands into the host now.
         gdf_cleaned = gdf_cleaned.reset_index(drop=True)
-        sindex = gdf_cleaned.sindex
-        areas = gdf_cleaned.geometry.area
+        geoms_now = gdf_cleaned.geometry.values
+        areas = shapely.area(geoms_now)
         island_hosts = {}
-        for idx in gdf_cleaned.index:
-            geom = gdf_cleaned.geometry.iloc[idx]
-            if geom.is_empty or areas.iloc[idx] >= min_area_threshold:
-                continue
-            best_host, best_area = None, None
-            for cand in sindex.intersection(geom.bounds):
-                if cand == idx or cand in island_hosts:
-                    continue
-                cand_geom = gdf_cleaned.geometry.iloc[cand]
-                if areas.iloc[cand] <= areas.iloc[idx]:
-                    continue
-                overlap = geom.intersection(cand_geom).area
-                if overlap >= 0.99 * areas.iloc[idx] and (best_area is None or areas.iloc[cand] < best_area):
-                    best_host, best_area = cand, areas.iloc[cand]
-            if best_host is not None:
-                island_hosts[idx] = best_host
+        small_now = np.flatnonzero(~shapely.is_empty(geoms_now) & (areas < min_area_threshold))
+        if len(small_now):
+            tree = shapely.STRtree(geoms_now)
+            si_l, ci = tree.query(geoms_now[small_now])
+            si = small_now[si_l]
+            # only larger polygons can host an island; how much of the island each covers
+            cand_ok = (si != ci) & (areas[ci] > areas[si])
+            si, ci = si[cand_ok], ci[cand_ok]
+            overlap = shapely.area(shapely.intersection(geoms_now[si], geoms_now[ci]))
+            order = np.lexsort((ci, si))
+            si, ci, overlap = si[order], ci[order], overlap[order]
+            starts = np.flatnonzero(np.r_[True, si[1:] != si[:-1]]) if len(si) else []
+            ends = np.r_[starts[1:], len(si)] if len(si) else []
+            for s0, s1_ in zip(starts, ends):
+                idx = int(si[s0])
+                best_host, best_area = None, None
+                for k in range(s0, s1_):
+                    cand = int(ci[k])
+                    if cand in island_hosts:
+                        continue
+                    if overlap[k] >= 0.99 * areas[idx] and (best_area is None or areas[cand] < best_area):
+                        best_host, best_area = cand, areas[cand]
+                if best_host is not None:
+                    island_hosts[idx] = best_host
 
         if island_hosts:
             print(f"Absorbing {len(island_hosts)} island polygons covered by filled holes...")
@@ -471,33 +436,19 @@ class StructuralPolygonSubSampler:
             iteration += 1
             print(f"Merge iteration {iteration}...")
             
-            # Rebuild spatial index for current iteration (since geometries may have changed)
-            if hasattr(gdf_cleaned, 'sindex'):
-                # Force rebuild of spatial index
-                gdf_cleaned._sindex = None
-            
             # Track which polygons have been merged in this iteration
             merged_indices = set()
-            merge_targets = {}  # Maps small polygon index to (target polygon index, merge reason)
-            
+
             # Find all small polygons and their best merge candidates
-            small_polygon_count = 0
-            for idx in gdf_cleaned.index:
-                if idx in merged_indices:
-                    continue
-                    
-                current_geom = gdf_cleaned.iloc[idx].geometry
-                
-                # Check if polygon is smaller than threshold
-                if current_geom.area < min_area_threshold:
-                    small_polygon_count += 1
-                    # Find the best merge candidate using hierarchical preferences
-                    best_candidate_idx, shared_length, merge_reason = find_best_merge_candidate_with_preferences(
-                        idx, gdf_cleaned, distance_threshold, lithoname, strat1, strat2, strat3, strat4)
-                    
-                    if best_candidate_idx is not None and shared_length > 0:
-                        merge_targets[idx] = (best_candidate_idx, merge_reason)
-            
+            areas_now = shapely.area(gdf_cleaned.geometry.values)
+            small_idx = np.flatnonzero(areas_now < min_area_threshold)
+            small_polygon_count = len(small_idx)
+            found = find_merge_targets(gdf_cleaned, small_idx, distance_threshold,
+                                       lithoname, strat1, strat2, strat3, strat4)
+            # Maps small polygon index to (target polygon index, merge reason)
+            merge_targets = {int(i): (found[int(i)][0], found[int(i)][2])
+                             for i in small_idx if int(i) in found}
+
             print(f"Found {small_polygon_count} small polygons, {len(merge_targets)} with merge candidates")
             
             # If no merges found, break

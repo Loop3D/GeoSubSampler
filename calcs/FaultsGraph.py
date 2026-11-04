@@ -44,8 +44,7 @@ class FaultsGraph:
         
         # First pass: collect all vertices and count occurrences
         print("Collecting vertices...")
-        for idx, row in gdf.iterrows():
-            line = row.geometry
+        for line in gdf.geometry.values:
             coords = list(line.coords)
             
             for coord in coords:
@@ -83,8 +82,9 @@ class FaultsGraph:
         print("Creating edges...")
         edge_id = 1  # Start edge IDs from 1
         
-        for idx, row in gdf.iterrows():
-            line = row.geometry
+        attr_cols = [c for c in gdf.columns if c != 'geometry']
+        records = gdf[attr_cols].to_dict('records') if attr_cols else [{} for _ in range(len(gdf))]
+        for idx, line, row in zip(gdf.index, gdf.geometry.values, records):
             coords = list(line.coords)
             
             # Find intersection points along this line
@@ -118,9 +118,8 @@ class FaultsGraph:
                 }
                 
                 # Add any additional attributes from the original shapefile
-                for col in gdf.columns:
-                    if col != 'geometry':
-                        edge_attrs[col] = row[col]
+                for col in attr_cols:
+                    edge_attrs[col] = row[col]
                 
                 G.add_edge(start_node, end_node, **edge_attrs)
                 edge_id += 1  # Increment for next edge
@@ -1532,8 +1531,7 @@ class FaultsGraph:
             self.find_paths_in_components(G_detailed)
             
             # Create simplified graph
-            G_simplified_simple = self.create_simplified_graph_simple(G_detailed)
-            #G_simplified_simple=add_centrality_measures(G_simplified_simple)
+            # (a second, "simple" simplified graph used to be built here and never used)
             G_simplified_full = self.create_simplified_graph_full(G_detailed)
             
             # Analyze the simplified graph
