@@ -7,6 +7,7 @@ ArcGIS Pro equivalent of the GeoSubSampler QGIS plugin, modelled on `SGTool/ARCG
 | `GeoSubSampler.pyt` | Python toolbox. **Launch GeoSubSampler GUI** starts the Tkinter window as a separate process, passes it the project's point/line/polygon layers, and adds each result to the map as it is written (symbology copied from the source layer). |
 | `GeoSubSampler_GUI.py` | Tkinter window - same groups and settings as the QGIS dock widget. |
 | `gss_processing.py` | GUI-independent port of the plugin's processing methods. Uses the shared `../calcs` package. |
+| `setup_arcgispro_env.py` | Sets up the Python environment (clone of the default one plus the packages needed); run by the toolbox's **Setup** tool. |
 
 ## Install
 1. In ArcGIS Pro: Catalog > Toolboxes > Add Toolbox > `ARCGIS/GeoSubSampler.pyt`.
@@ -31,7 +32,17 @@ ArcGIS Pro equivalent of the GeoSubSampler QGIS plugin, modelled on `SGTool/ARCG
    > `conda install -n <your-clone> geopandas scikit-learn networkx scipy matplotlib fiona`.
 3. Run **Launch GeoSubSampler GUI**. Keep the tool running; closing the GUI window ends it.
 
+## What the window offers
+Same groups as the QGIS plugin: orientation subsampling (Stochastic, Kent with an optional Min kappa, Kent Outlier
+with an optional Iterative mode, Carmichael, 1o Sampling, with "Auto-fit to N pts"), fault tools (Merge Segments,
+Length, Graph, Strat Offset, Orientation Clusters), geology polygons (Rescale Map, Simplify Map, **Densify
+Nodes**) and Töpfer & Pillewizer scaling. Hover over a control for its tooltip.
+
 ## Notes
+* **Densify Nodes** uses the selected polygon and/or fault layer, with a node spacing in metres; with both, new
+  nodes are shared between them. Outputs are `<layer>_dense_<spacing>` shapefiles.
+* **Strat Offset** also writes `<fault layer>_stratOffset_samples` (a point layer of where the offset was read,
+  with the offset level and the units either side); it is added to the map without copying symbology.
 * Feature classes in a geodatabase are exported once to a shapefile (field names shortened to
   10 characters) and results are written as shapefiles beside the source, or to the project folder
   if that folder is not writable - the same rules as the QGIS plugin.
