@@ -22,9 +22,10 @@
  ***************************************************************************/
 """
 import logging
+import unicodedata
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtWidgets import QAction, QApplication
 from qgis.core import QgsProject, QgsMapLayerProxyModel, Qgis
 from qgis.core import QgsVectorLayer, QgsProject
 from qgis.PyQt.QtWidgets import QDockWidget
@@ -46,15 +47,13 @@ import os.path
 import tempfile
 import shutil
 from .calcs.StructuralPolygonSubSampler import StructuralPolygonSubSampler
-from .calcs.PolygonTriangulator import PolygonTriangulator
 from .calcs.FaultLineMerger import FaultLineMerger
 from .calcs.FaultLengths import FaultLengths
-from .calcs.FaultsGraph import FaultsGraph
 from .calcs.FaultStratOffset import FaultStratOffset
 from .calcs.FaultClusterOrientation import FaultsOrientations
-from .calcs.FirstOrderOrientation import SubsamplingEngine, save_grid_to_shapefile, dip_field_problem
+from .calcs.FirstOrderOrientation import (SubsamplingEngine, save_grid_to_shapefile, dip_field_problem,
+                                          clean_orientations, format_invalid_report)
 from .calcs.TopferPillewizer import dipdir_to_strike, topfer_count, scale_iterations, scale_points_tp, scale_lines_tp, scale_polygons_tp
-from .calcs.PolygonSimplification import SimplificationEngine, vector_simplify_file_two_stage
 import geopandas as gpd
 import os
 import random
@@ -68,6 +67,12 @@ import numpy as np
 
 class GeoSubSampler:
     """QGIS Plugin Implementation."""
+
+    @staticmethod
+    def _triangulator_class():
+        # imported when first needed: it brings in matplotlib and scipy
+        from .calcs.PolygonTriangulator import PolygonTriangulator
+        return PolygonTriangulator
 
     def __init__(self, iface):
         """Constructor.
@@ -105,6 +110,8 @@ class GeoSubSampler:
 
         self.pluginIsActive = False
         self.dockwidget = None
+        self._run_dir = None          # the folder of the current button press (see _run_directory)
+        self._run_label = ""
 
     # noinspection PyMethodMayBeStatic
     def tr(self, message):
@@ -226,6 +233,30 @@ class GeoSubSampler:
         """Removes the plugin menu item and icon from QGIS GUI."""
 
         # print "** UNLOAD GeoSubSampler"
+
+        # remove the dock window (and any open report window), so reloading the plugin
+        # (e.g. with Plugin Reloader) does not leave the old one behind
+        dlg = getattr(self, "_report_dialog", None)
+        if dlg is not None:
+            try:
+                dlg.close()
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
+            self._report_dialog = None
+        if self.dockwidget is not None:
+            try:
+                self.dockwidget.closingPlugin.disconnect(self.onClosePlugin)
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                self.iface.removeDockWidget(self.dockwidget)
+                self.dockwidget.close()
+                self.dockwidget.deleteLater()
+            except RuntimeError:
+                pass
+            self.dockwidget = None
+            self.pluginIsActive = False
 
         for action in self.actions:
             self.iface.removePluginMenu(self.tr("&GeoSubSampler"), action)
@@ -360,7 +391,9 @@ class GeoSubSampler:
             return field_map[real_name]
         return real_name
 
-    def setUpPointSampler(self, checkFields=True):
+    def setUpPointSampler(self, checkFields=True, columns_only=False):
+        """columns_only: read just the dip and dip direction columns (enough for the grid-cell
+        methods, whose output holds only what they compute - a big saving on wide tables)."""
         layerName = self.dockwidget.mMapLayerComboBox_points.currentText()
         dip_col = self.dockwidget.mFieldComboBox_dip.currentText()
         dip_dir_col = self.dockwidget.mFieldComboBox_dip_dir.currentText()
@@ -370,7 +403,15 @@ class GeoSubSampler:
 
         if os.path.exists(self._resolved_source(self.points_layer)):
 
-            gdf = gpd.read_file(self._resolved_source(self.points_layer))
+            src = self._resolved_source(self.points_layer)
+            wanted = None
+            if columns_only and dip_col and dip_dir_col:
+                wanted = [self._resolved_field(self.points_layer, dip_col),
+                          self._resolved_field(self.points_layer, dip_dir_col)]
+            try:
+                gdf = gpd.read_file(src, columns=wanted) if wanted else gpd.read_file(src)
+            except Exception:
+                gdf = gpd.read_file(src)
             fields_selected = True
 
             if (dip_col == "" or dip_dir_col == "") and checkFields:
@@ -403,9 +444,8 @@ class GeoSubSampler:
             # Dip must be 0-90: values above that mean the dip and dip dir/strike fields
             # have been swapped (only checked for fields the user actually selected)
             if fields_selected:
-                problem = dip_field_problem(gdf[dip_col], dip_col)
-                if problem:
-                    self._warn(problem + " Nothing was processed.", level=MSG_CRITICAL, duration=20)
+                gdf = self._clean_points(gdf, dip_col, dip_dir_col, self.points_layer)
+                if gdf is None:
                     return False
 
             # Add coordinate columns from geometry (engine needs these for grid operations)
@@ -495,6 +535,8 @@ class GeoSubSampler:
         silently. Qt's clicked(bool) argument is deliberately dropped.
         """
         def wrapper(*_args):
+            self._run_dir = None                 # a new button press gets a new output folder
+            self._run_label = label
             try:
                 fn()
             except Exception as exc:
@@ -521,7 +563,44 @@ class GeoSubSampler:
             new_layer.importNamedStyle(doc)
         except Exception:
             logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
-        QgsProject.instance().addMapLayer(new_layer)
+        self._add_to_outputs(new_layer)
+
+    def _outputs_group(self):
+        """The layer-tree group "Outputs" (created at the top of the layer panel if it does not exist)."""
+        root = QgsProject.instance().layerTreeRoot()
+        group = root.findGroup("Outputs")
+        if group is None:
+            group = root.insertGroup(0, "Outputs")
+        return group
+
+    def _add_to_outputs(self, layer):
+        """Add a result layer to the project, inside the "Outputs" group (newest on top)."""
+        QgsProject.instance().addMapLayer(layer, False)
+        self._outputs_group().insertLayer(0, layer)
+
+    def _run_directory(self, qgis_layer):
+        """
+        The folder for everything one button press writes: <tool>_<YYYYMMDD_HHMMSS>, created next to the layer
+        (or in the project / temp folder) by the first output of the press. A series (Rescale Map, T&P scaling) or
+        a result with its report, progress and extra files all share it; the next press gets a new folder.
+        """
+        if self._run_dir is None or not os.path.isdir(self._run_dir):
+            base = self._output_directory(qgis_layer)
+            tag = unicodedata.normalize("NFKD", self._run_label or "run").encode("ascii", "ignore").decode()
+            tag = re.sub(r"[^A-Za-z0-9]+", "_", tag).strip("_") or "run"
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(base, f"{tag}_{stamp}")
+            n = 1
+            while os.path.exists(path):
+                n += 1
+                path = os.path.join(base, f"{tag}_{stamp}_{n}")
+            try:
+                os.makedirs(path)
+            except OSError as exc:
+                self._warn(f"Could not create the output folder {path}: {exc}. Using {base} instead.")
+                path = base
+            self._run_dir = path
+        return self._run_dir
 
     @staticmethod
     def _safe_filename(text, max_len=80):
@@ -592,13 +671,37 @@ class GeoSubSampler:
                    level=MSG_INFO, duration=10)
         return copies[shp_path]
 
+    def _clean_points(self, gdf, dip_col, dipdir_col, layer):
+        """
+        Ignore measurements with unusable values (missing, dip outside 0-90, dip direction/strike outside
+        0-360, e.g. 9999) and write a report of what was ignored.  Returns the usable points, or None if
+        the dip and dip direction fields look swapped (nothing is processed then).
+        """
+        clean, info, problem = clean_orientations(gdf, dip_col, dipdir_col)
+        if problem:
+            self._warn(problem + " Nothing was processed.", level=MSG_CRITICAL, duration=20)
+            return None
+        if info:
+            report = format_invalid_report(info, self._resolved_source(layer))
+            path = os.path.splitext(self._make_output_path(layer, "_ignored_points"))[0] + "_report.txt"
+            try:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(report)
+                where = f" Report: {path}"
+            except OSError:
+                where = ""
+            QgsMessageLog.logMessage(report, "GeoSubSampler", MSG_INFO)
+            self._warn(f"{info['n_ignored']} of {info['n_total']} points have unusable dip / dip direction values "
+                       f"and were ignored.{where}", level=MSG_WARNING, duration=20)
+        return clean
+
     def _make_output_path(self, qgis_layer, suffix):
         """
         A unique, safe .shp path for a result derived from `qgis_layer`:
         <folder>/<layer name><suffix>.shp, with a random number added if that
         file already exists.
         """
-        base = os.path.join(self._output_directory(qgis_layer),
+        base = os.path.join(self._run_directory(qgis_layer),
                             self._safe_filename(qgis_layer.name()) + self._safe_filename(suffix))
         path = base + ".shp"
         if os.path.exists(path):
@@ -625,7 +728,7 @@ class GeoSubSampler:
         return alt
 
     def finalisePointSampler(self, gdf2, qgis_layer, name, param=0):
-        layer_path = self._output_directory(qgis_layer)
+        layer_path = self._run_directory(qgis_layer)
         if(param==0):
             param2 = ''
 
@@ -828,7 +931,7 @@ class GeoSubSampler:
         return gdf2
 
     def kent(self):
-        result = self.setUpPointSampler()
+        result = self.setUpPointSampler(columns_only=True)
         if not result:
             return
         gdf, engine, dip_col, dip_dir_col = result
@@ -886,7 +989,7 @@ class GeoSubSampler:
             self.finalisePointSampler(gdf2, self.points_layer, name, display_size)
 
     def kentOutlier(self):
-        result = self.setUpPointSampler()
+        result = self.setUpPointSampler(columns_only=True)
         if not result:
             return
         gdf, engine, dip_col, dip_dir_col = result
@@ -933,7 +1036,7 @@ class GeoSubSampler:
 
     def carmichael(self):
         """Grid-cell Kent averaging with iterative multi-outlier removal (Carmichael 2016)."""
-        result = self.setUpPointSampler()
+        result = self.setUpPointSampler(columns_only=True)
         if not result:
             return
         gdf, engine, dip_col, dip_dir_col = result
@@ -1044,6 +1147,7 @@ class GeoSubSampler:
             try:
                 tmp_in = os.path.join(tmpdir, 'tp_graph.shp')
                 gdf.to_file(tmp_in)
+                from .calcs.FaultsGraph import FaultsGraph       # (networkx: loaded when needed)
                 FaultsGraph().CalcFaultsGraph(tmp_in)
                 # save_graph_to_shapefile prepends prefix_ to the basename:
                 # tp_graph_edges.shp → simplified_full_tp_graph_edges.shp
@@ -1366,7 +1470,7 @@ class GeoSubSampler:
                         dyke_field=dyke_field or None,
                         dyke_codes=dyke_codes if dyke_field else None,
                         triangulator_class=(
-                            PolygonTriangulator if dyke_field else None),
+                            self._triangulator_class() if dyke_field else None),
                         info=poly_info,
                     )
                     current_polygon_gdf = poly_scaled
@@ -1416,7 +1520,7 @@ class GeoSubSampler:
                                          fault_layer if current_fault_gdf is not None else None,
                                          polygon_layer if current_polygon_gdf is not None else None)
                              if l is not None)
-            report_dir = os.path.dirname(self._resolved_source(ref_layer))
+            report_dir = self._run_directory(ref_layer)
             report_path = os.path.join(
                 report_dir, f"TP_scaling_report_{time.strftime('%Y%m%d_%H%M%S')}.csv")
             with open(report_path, 'w', newline='', encoding='utf-8-sig') as fh:
@@ -1454,9 +1558,8 @@ class GeoSubSampler:
                     return
                 dip_col = self._resolved_field(self.point_layer, dip_col)
                 dip_dir_col = self._resolved_field(self.point_layer, dip_dir_col)
-                problem = dip_field_problem(orientation_gdf[dip_col], dip_col)
-                if problem:
-                    self._warn(problem + " Nothing was processed.", level=MSG_CRITICAL, duration=20)
+                orientation_gdf = self._clean_points(orientation_gdf, dip_col, dip_dir_col, self.point_layer)
+                if orientation_gdf is None:
                     return
 
                 # The engine expects dip direction. If the field holds strike,
@@ -1544,7 +1647,7 @@ class GeoSubSampler:
                         self._warn("Ignore field is set but the Ignore Codes box is empty - "
                                    "no polygons will be triangulated.")
                     if dyke_index != 0 and dyke_codes:
-                        triangulator = PolygonTriangulator(
+                        triangulator = self._triangulator_class()(
                             gdf=gdf,
                             id_column=dyke_field,
                             min_area_threshold=min_area_threshold * 1000000.0,
@@ -1632,14 +1735,12 @@ class GeoSubSampler:
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
         if os.path.exists(self._resolved_source(self.polyline_layer)):
+            from .calcs.FaultsGraph import FaultsGraph       # (networkx: loaded when needed)
             graph_obj = FaultsGraph()
-            graph_obj.CalcFaultsGraph(self._resolved_source(self.polyline_layer))
+            run_dir = self._run_directory(self.polyline_layer)
+            graph_obj.CalcFaultsGraph(self._resolved_source(self.polyline_layer), output_dir=run_dir)
             directory, filename = os.path.split(self._resolved_source(self.polyline_layer))
-            new_path = (
-                directory
-                + "/simplified_full_"
-                + str(filename).replace(".shp", "_edges.shp")
-            )
+            new_path = os.path.join(run_dir, "simplified_full_" + str(filename).replace(".shp", "_edges.shp"))
             print("dir fn np", directory, filename, new_path)
             graph_layer = QgsVectorLayer(
                 new_path, self.polyline_layer.name() + "_graph", "ogr"
@@ -1681,25 +1782,29 @@ class GeoSubSampler:
             strat_columns = [self._resolved_field(self.map_layer, c) for c in strat_columns]
 
             strat_offset_obj = FaultStratOffset()
+            new_path = self._make_output_path(self.polyline_layer, "_stratOffset")
             strat_offset_obj.CalcFaultStratOffset(
                 self._resolved_source(self.polyline_layer),
                 self._resolved_source(self.map_layer),
-                self._resolved_source(self.polyline_layer).replace(".shp", "_stratOffset.shp"),
+                new_path,
                 strat_columns,
                 offset_distance=50,
             )
-
-            directory, filename = os.path.split(self._resolved_source(self.polyline_layer))
-            new_path = (
-                directory + "/" + str(filename).replace(".shp", "_stratOffset.shp")
-            )
-            print("dir fn np", directory, filename, new_path)
             graph_layer = QgsVectorLayer(
                 new_path, self.polyline_layer.name() + "_stratOffset", "ogr"
             )
 
             self._add_layer_with_style(graph_layer, self.polyline_layer,
                                        self.polyline_layer.name() + "_stratOffset")
+
+            # the points where the offset was read (one per fault / contact crossing), with
+            # their offset level and the units either side
+            samples_path = new_path.replace(".shp", "_samples.shp")
+            if os.path.exists(samples_path):
+                samples_layer = QgsVectorLayer(
+                    samples_path, self.polyline_layer.name() + "_stratOffset_samples", "ogr")
+                if samples_layer.isValid():
+                    self._add_to_outputs(samples_layer)
 
     def fault_Lengths(self):
         self.polyline_layer = (
@@ -1713,7 +1818,7 @@ class GeoSubSampler:
             else:
                 crs_units = "meters"
 
-            outPath = self._resolved_source(self.polyline_layer).replace(".shp", "_length.shp")
+            outPath = self._make_output_path(self.polyline_layer, "_length")
             filter_obj = FaultLengths()
             gdf = filter_obj.add_polyline_length(
                 self._resolved_source(self.polyline_layer),
@@ -1750,7 +1855,7 @@ class GeoSubSampler:
             self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
         )
         if os.path.exists(self._resolved_source(self.polyline_layer)):
-            outPath = self._resolved_source(self.polyline_layer).replace(".shp", "_endpt_az.shp")
+            outPath = self._make_output_path(self.polyline_layer, "_endpt_az")
             filter_obj = FaultsOrientations()
             gdf = filter_obj.add_endpoint_azimuth(
                 self._resolved_source(self.polyline_layer), outPath, azimuth_field="endpt_az"
@@ -1796,12 +1901,15 @@ class GeoSubSampler:
         if polygon_layer is None or fault_layer is None:
             self._warn("Map simplification: select both a polygon layer and a fault layer.")
             return
+        from .calcs.PolygonSimplification import vector_simplify_file_two_stage   # (loaded when needed)
         area_tolerance = int(self.dockwidget.lineEdit_area_tolerance.text())
         input_file = self._resolved_source(polygon_layer)
         fault_file = self._resolved_source(fault_layer)
-        output_file = input_file.replace(".shp", f"_MVW_{area_tolerance}.shp")
+        output_file = self._make_output_path(polygon_layer, f"_MVW_{area_tolerance}")
         poly_name=polygon_layer.name()+f"_MVW_{area_tolerance}"
-        fault_path=self._resolved_source(fault_layer).replace(".shp", f"_sn_si_{area_tolerance}.shp")
+        # the faults are written beside the polygon output, as <fault name>_sn_si_<tolerance>.shp
+        fault_path = os.path.join(os.path.dirname(output_file),
+                                  os.path.splitext(os.path.basename(fault_file))[0] + f"_sn_si_{area_tolerance}.shp")
         fault_name=fault_layer.name()+f"_sn_si_{area_tolerance}"
         result = vector_simplify_file_two_stage(
                         input_file=input_file,
@@ -1820,6 +1928,159 @@ class GeoSubSampler:
 
         upscaled_fault = QgsVectorLayer(fault_path, fault_name, "ogr")
         self._add_layer_with_style(upscaled_fault, fault_layer, fault_name)
+
+    def _show_report(self, title, text):
+        """Show a text report in a window (kept open until the user closes it)."""
+        from qgis.PyQt.QtWidgets import QDialog, QVBoxLayout, QPlainTextEdit
+        from qgis.PyQt.QtGui import QFont
+        dlg = QDialog(self.iface.mainWindow())
+        dlg.setWindowTitle(title)
+        lay = QVBoxLayout(dlg)
+        box = QPlainTextEdit(text)
+        box.setReadOnly(True)
+        box.setFont(QFont("Courier New", 9))
+        lay.addWidget(box)
+        dlg.resize(900, 650)
+        self._report_dialog = dlg                      # keep a reference
+        dlg.show()
+
+    def fixMap(self):
+        """
+        Make the polygon and fault layers topologically consistent within a tolerance in metres:
+        repair invalid polygons, remove doubled features, cut holes for polygons lying inside
+        others, close small gaps/overlaps, match nodes along shared boundaries and at junctions,
+        and snap faults onto nearby contacts.  A text report is saved and shown.
+        """
+        from .calcs.FixMap import fix_map
+        polygon_layer = self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
+        fault_layer = self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
+        layers = [l for l in (polygon_layer, fault_layer) if l is not None]
+        if not layers:
+            self._warn("Fix Map: select a polygon layer and/or a fault layer.")
+            return
+        try:
+            tol = float(self.dockwidget.lineEdit_fixmap_tolerance.text())
+        except ValueError:
+            tol = 0.0
+        if tol <= 0:
+            self._warn("Fix Map: the tolerance must be a number of metres above zero.")
+            return
+        gdfs = []
+        for layer in layers:
+            path = self._resolved_source(layer)
+            if not os.path.exists(path):
+                self._warn("Sorry, only layers saved to disk as a shapefile can be processed!")
+                return
+            gdfs.append(gpd.read_file(path))
+        self._warn("Fix Map is running; this can take a few minutes for large maps ...", level=MSG_INFO, duration=5)
+        geographic = any(l.crs().isGeographic() for l in layers)
+        sources = [self._resolved_source(l) for l in layers]
+        # QGIS cannot redraw while this runs, so each progress line is also written to a text file
+        # (flushed at once) that can be opened in an editor to watch the run
+        progress_path = os.path.splitext(self._make_output_path(layers[0], f"_fixed_{tol:g}"))[0] + "_progress.txt"
+        try:
+            progress_file = open(progress_path, "w", encoding="utf-8")
+        except OSError:
+            progress_file = None
+        t_run = time.time()
+
+        def progress(line):
+            if progress_file is not None:
+                progress_file.write(f"[{time.strftime('%H:%M:%S')}  +{time.time() - t_run:6.0f} s] {line}\n")
+                progress_file.flush()
+
+        if progress_file is not None:
+            self._warn(f"Fix Map is running; progress is written to {progress_path}", level=MSG_INFO, duration=10)
+        try:
+            results, report, stats = fix_map(gdfs, tol, geographic=geographic, sources=sources, progress=progress,
+                                          fill_gaps=self.dockwidget.checkBox_fixmap_fillgaps.isChecked(),
+                                          overlap_rule=("smaller", "larger", None)[self.dockwidget.comboBox_fixmap_overlap.currentIndex()])
+        finally:
+            if progress_file is not None:
+                progress_file.close()
+        tag = f"_fixed_{tol:g}"
+        first_out = None
+        outputs = []
+        for layer, gdf in zip(layers, results):
+            out_path = self._save_gdf(gdf, self._make_output_path(layer, tag))
+            first_out = first_out or out_path
+            outputs.append(out_path)
+            self._add_layer_with_style(QgsVectorLayer(out_path, layer.name() + tag, "ogr"), layer, layer.name() + tag)
+        report_path = os.path.splitext(first_out)[0] + "_report.txt"
+        report += "\n\nOUTPUT FILES\n" + "\n".join(f"  {o}" for o in outputs) + f"\n  {report_path}"
+        try:
+            with open(report_path, "w", encoding="utf-8") as fh:
+                fh.write(report)
+        except OSError:
+            pass
+        QgsMessageLog.logMessage(report, "GeoSubSampler", MSG_INFO)
+        self._show_report("Fix Map report", report)
+        self._warn(f"Fix Map finished (tolerance {tol:g} m); see the report window.", level=MSG_SUCCESS, duration=15)
+
+    def repairPolygons(self):
+        """Repair invalid polygons with buffer(0) and save the result."""
+        from .calcs.FixMap import repair_polygons
+        layer = self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
+        if layer is None:
+            self._warn("Repair: select a polygon layer.")
+            return
+        path = self._resolved_source(layer)
+        if not os.path.exists(path):
+            self._warn("Sorry, only layers saved to disk as a shapefile can be processed!")
+            return
+        gdf, info = repair_polygons(gpd.read_file(path))
+        if not info["invalid"]:
+            self._warn("Repair: there are no invalid polygons in this layer.", level=MSG_SUCCESS)
+            return
+        out_path = self._save_gdf(gdf, self._make_output_path(layer, "_valid"))
+        self._add_layer_with_style(QgsVectorLayer(out_path, layer.name() + "_valid", "ogr"), layer, layer.name() + "_valid")
+        self._warn(f"Repaired {info['repaired']} of {info['invalid']} invalid polygons"
+                   + (f"; could not repair {info['failed']}" if info["failed"] else "") + ".",
+                   level=MSG_SUCCESS, duration=15)
+
+    def densify(self):
+        """
+        Insert nodes so that no segment is longer than the chosen spacing, keeping the polygon
+        and fault layers topologically consistent: a new node on a boundary shared by two
+        polygons, or run along by a fault, is the same node in all of them.
+        """
+        from .calcs.Densify import densify_layers
+        polygon_layer = self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
+        fault_layer = self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
+        layers = [l for l in (polygon_layer, fault_layer) if l is not None]
+        if not layers:
+            self._warn("Densify: select a polygon layer and/or a fault layer.")
+            return
+        try:
+            spacing = float(self.dockwidget.lineEdit_densify_spacing.text())
+        except ValueError:
+            spacing = 0.0
+        if spacing <= 0:
+            self._warn("Densify: the node spacing must be a number of metres above zero.")
+            return
+        gdfs = []
+        for layer in layers:
+            path = self._resolved_source(layer)
+            if not os.path.exists(path):
+                self._warn("Sorry, only layers saved to disk as a shapefile can be processed!")
+                return
+            gdfs.append(gpd.read_file(path))
+        geographic = any(l.crs().isGeographic() for l in layers)
+        results, stats = densify_layers(
+            gdfs, spacing, geographic=geographic,
+            node_crossings=self.dockwidget.checkBox_densify_crossings.isChecked())
+        tag = f"_dense_{spacing:g}"
+        for layer, gdf in zip(layers, results):
+            out_path = self._save_gdf(gdf, self._make_output_path(layer, tag))
+            self._add_layer_with_style(QgsVectorLayer(out_path, layer.name() + tag, "ogr"), layer,
+                                       layer.name() + tag)
+        self._warn(
+            f"Densified to {spacing:g} m: {stats['vertices_in']} -> {stats['vertices_out']} vertices"
+            + (f"; {stats['nodes_added_at_crossings']} shared nodes added where features cross"
+               if stats.get('nodes_added_at_crossings') else "")
+            + (f"; {stats['vertices_welded']} near-coincident vertices welded"
+               if stats.get('vertices_welded') else "") + ".",
+            level=MSG_SUCCESS, duration=15)
 
     def updateMapsFields(self):
         """Update the fields in the maps layer combo box when a new layer is selected."""
@@ -1973,7 +2234,7 @@ class GeoSubSampler:
             "Fault polyline layer selected for processing"
         )
         self.dockwidget.pushButton_merge_segments.setToolTip(
-            "Merge connected polylines\nWARNING: VERY SLOW FOR LARGE DATASETS (>1s per object)"
+            "Merge connected polylines\nAbout half a second for 1,400 faults; larger sets scale roughly in proportion"
         )
         self.dockwidget.lineEdit_merge_tolerance.setToolTip(
             "Minimum distance between end points"
@@ -2000,6 +2261,10 @@ class GeoSubSampler:
             "Add stratigraphic offset data to faults\n"
             "Requires both fault and map polygon layers\n"
             "as well as Geology Map Priority Codes (see below) to be defined\n"
+            "The units either side of the fault are read at every point where the fault crosses a\n"
+            "geological contact (start/middle/end for faults that meet none). Adds the maximum\n"
+            "offset level, how many samples were used (n_samples) and how many showed an offset\n"
+            "(n_offset), and saves the sample points as *_stratOffset_samples.\n"
             "Does not filter data, just adds Strat Offset attributes"
         )
         self.dockwidget.pushButton_process_faults.setToolTip(
@@ -2020,6 +2285,43 @@ class GeoSubSampler:
         )
         self.dockwidget.lineEdit_area_tolerance.setToolTip(
             "Tolerance for area-based filtering, in m2"
+        )
+        self.dockwidget.lineEdit_fixmap_tolerance.setToolTip(
+            "Features closer together than this (in metres; degrees are converted approximately)\n"
+            "are treated as meant to coincide. Nothing moves by more than this."
+        )
+        self.dockwidget.comboBox_fixmap_overlap.setToolTip(
+            "What to do with overlaps between polygons that are left at the end:\n"
+            "Keep smaller polygon: the overlapping part is cut out of the bigger polygon (as for a polygon inside another)\n"
+            "Keep larger polygon: it is cut out of the smaller polygon\n"
+            "Leave overlaps: nothing is cut. A polygon that is entirely overlapped disappears."
+        )
+        self.dockwidget.pushButton_fixmap.setToolTip(
+            "Make the selected polygon and fault layers topologically consistent:\n"
+            "- invalid polygons repaired (buffer 0); doubled polygons and faults removed\n"
+            "- polygons lying inside another polygon get a hole in it\n"
+            "- small gaps and overlaps between polygons closed; nodes along shared boundaries and\n"
+            "  at triple junctions made identical; faults snapped onto nearby contacts and faults\n"
+            "- nodes added where lines cross\n"
+            "Bigger polygons are never moved by smaller ones, and polygons never by faults.\n"
+            "Saves <layer>_fixed_<tol> and a text report, and shows the report."
+        )
+        self.dockwidget.pushButton_repair_polygons.setToolTip(
+            "Repair invalid polygons (self-intersections etc.) with buffer(0).\n"
+            "Also done as the first step of Fix Map."
+        )
+        self.dockwidget.lineEdit_densify_spacing.setToolTip(
+            "Largest distance between nodes, in metres (degrees are converted approximately).\n"
+            "Every segment is divided into equal parts no longer than this."
+        )
+        self.dockwidget.checkBox_densify_crossings.setToolTip(
+            "Also add a node, shared by both, where a fault or polygon boundary crosses a polygon\n"
+            "boundary, and where a vertex lies on another feature's segment (T-junction)."
+        )
+        self.dockwidget.pushButton_densify.setToolTip(
+            "Add nodes along the selected polygon and fault layers. New nodes on a shared boundary\n"
+            "are identical in the polygon on each side and in any fault running along it.\n"
+            "Shapes do not change. Vertices closer than 1 micrometre are first merged."
         )
         self.dockwidget.pushButton_simplifyMap.setToolTip(
             "Simplify map polygons based on area tolerance, respecting fault topology"
@@ -2105,6 +2407,13 @@ class GeoSubSampler:
                 self._guard(self.topferPillewizer, "Töpfer & Pillewizer scaling"))
             self.dockwidget.pushButton_simplifyMap.clicked.connect(
                 self._guard(self.simplifyMap, "Map simplification")
+            )
+            self.dockwidget.pushButton_fixmap.clicked.connect(
+                self._guard(self.fixMap, "Fix map"))
+            self.dockwidget.pushButton_repair_polygons.clicked.connect(
+                self._guard(self.repairPolygons, "Repair polygons"))
+            self.dockwidget.pushButton_densify.clicked.connect(
+                self._guard(self.densify, "Densify nodes")
             )
             self.dockwidget.mFieldComboBox_dip.setAllowEmptyFieldName(True)
             self.dockwidget.mFieldComboBox_dip.setCurrentIndex(0)

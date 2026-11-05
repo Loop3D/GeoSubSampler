@@ -143,16 +143,27 @@ class LaunchGUI:
             arcpy.AddError("Cannot locate python.exe for the active ArcGIS Pro environment.")
             return
 
-        # geopandas etc. must be importable by that interpreter
-        probe = subprocess.run([python_exe, "-c", "import geopandas, shapely, sklearn, networkx"],  # nosec B603 - fixed program and arguments built by this code, no shell
+        # geopandas etc. must be importable by that interpreter, and shapely must be version 2 or newer
+        probe_code = ("import sys, geopandas, shapely, scipy, sklearn, networkx\n"
+                      "v = tuple(int(x) for x in shapely.__version__.split('.')[:2])\n"
+                      "if v < (2, 0):\n"
+                      "    sys.stderr.write('shapely ' + shapely.__version__ + ' is too old: GeoSubSampler needs shapely 2.0 or newer')\n"
+                      "    sys.exit(3)\n")
+        probe = subprocess.run([python_exe, "-c", probe_code],  # nosec B603 - fixed program and arguments built by this code, no shell
                                capture_output=True, text=True,
                                creationflags=subprocess.CREATE_NO_WINDOW)   # no console flash
+        if probe.returncode == 3:
+            arcpy.AddError(
+                f"{probe.stderr.strip()}.\n"
+                "In a clone of the default environment run: conda install \"shapely>=2\" "
+                "(or use Setup > Set Up Python Environment), then make the clone active and restart ArcGIS Pro.")
+            return
         if probe.returncode != 0:
             arcpy.AddError(
                 "A required Python package is missing from the ArcGIS Pro environment:\n"
                 f"{probe.stderr.strip().splitlines()[-1] if probe.stderr.strip() else ''}\n"
-                "Clone the default environment (Package Manager) and install geopandas, "
-                "scikit-learn and networkx, then make the clone active.")
+                "Clone the default environment (Package Manager) and install geopandas, shapely (2.0 or newer), "
+                "scipy, scikit-learn and networkx, then make the clone active.")
             return
 
         proj = arcpy.mp.ArcGISProject("CURRENT")

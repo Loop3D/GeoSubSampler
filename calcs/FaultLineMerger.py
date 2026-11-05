@@ -172,6 +172,72 @@ class FaultLineMerger:
         cos_angle = max(-1.0, min(1.0, (CAx * CBx + CAy * CBy) / (mag_CA * mag_CB)))
         return math.degrees(math.acos(cos_angle))
 
+    @staticmethod
+    def _line_ends(line: LineString):
+        """The few coordinates of a line that the merge tests use: (first, second, second-last,
+        last, number of vertices).  Read once per line and pass, instead of once per test."""
+        coords = list(line.coords)
+        n = len(coords)
+        return (coords[0], coords[1] if n > 1 else coords[0],
+                coords[-2] if n > 1 else coords[-1], coords[-1], n)
+
+    def _can_merge_ends(self, e1, e2, endpoint1: str, endpoint2: str) -> Tuple[bool, float]:
+        """:meth:`lines_can_merge` on the cached end-point data of two lines."""
+        c0_1, c1_1, cm2_1, cm1_1, n1 = e1
+        c0_2, c1_2, cm2_2, cm1_2, n2 = e2
+
+        if endpoint1 == "start":
+            px1, py1 = c0_1
+            angle1 = math.atan2(c1_1[1] - c0_1[1], c1_1[0] - c0_1[0]) if n1 >= 2 else 0.0
+        else:
+            px1, py1 = cm1_1
+            angle1 = math.atan2(cm1_1[1] - cm2_1[1], cm1_1[0] - cm2_1[0]) if n1 >= 2 else 0.0
+        if endpoint2 == "start":
+            px2, py2 = c0_2
+            angle2 = math.atan2(c1_2[1] - c0_2[1], c1_2[0] - c0_2[0]) if n2 >= 2 else 0.0
+        else:
+            px2, py2 = cm1_2
+            angle2 = math.atan2(cm1_2[1] - cm2_2[1], cm1_2[0] - cm2_2[0]) if n2 >= 2 else 0.0
+
+        distance = math.hypot(px2 - px1, py2 - py1)
+        if distance > self.distance_tolerance:
+            return False, float("inf")
+
+        angle_diff = self.angle_difference(angle1, angle2)
+        angle_diff_anti = self.angle_difference(angle1, angle2 + math.pi)
+        min_angle_diff = min(angle_diff, angle_diff_anti)
+        if min_angle_diff > self.angle_tolerance:
+            return False, float("inf")
+
+        # the angle ACB at the join point C, from the cached coordinates
+        if endpoint1 == "start" and endpoint2 == "start":
+            C, A, B = c0_1, c1_1, c1_2
+        elif endpoint1 == "start" and endpoint2 == "end":
+            C, A, B = c0_1, c1_1, cm2_2
+        elif endpoint1 == "end" and endpoint2 == "start":
+            C, A, B = cm1_1, cm2_1, c1_2
+        else:
+            C, A, B = cm1_1, cm2_1, cm2_2
+        CAx, CAy = A[0] - C[0], A[1] - C[1]
+        CBx, CBy = B[0] - C[0], B[1] - C[1]
+        mag_CA = math.hypot(CAx, CAy)
+        mag_CB = math.hypot(CBx, CBy)
+        if mag_CA == 0 or mag_CB == 0:
+            join_angle = 180.0
+        else:
+            cos_angle = max(-1.0, min(1.0, (CAx * CBx + CAy * CBy) / (mag_CA * mag_CB)))
+            join_angle = math.degrees(math.acos(cos_angle))
+        if join_angle < self.min_join_angle:
+            return False, float("inf")
+
+        angle_penalty = (180.0 - join_angle) / (180.0 - self.min_join_angle)
+        straightness_score = (
+            distance
+            + (min_angle_diff / self.angle_tolerance) * self.distance_tolerance
+            + angle_penalty * self.distance_tolerance
+        )
+        return True, straightness_score
+
     def lines_can_merge(
         self, line1: LineString, line2: LineString, endpoint1: str, endpoint2: str
     ) -> Tuple[bool, float]:
@@ -286,6 +352,8 @@ class FaultLineMerger:
 
             # Build spatial index once per pass
             spatial_tree, indexed_lines = self.build_spatial_index(working_lines)
+            # End-point coordinates of every line, read once per pass
+            self._ends = [self._line_ends(line) for line in working_lines]
 
             consumed = set()   # indices merged away this pass
             new_lines = []     # replacement lines produced this pass
@@ -325,6 +393,7 @@ class FaultLineMerger:
         print(f"Merging complete after {iteration} passes")
         print(f"Final result: {len(working_lines)} lines")
 
+        self._ends = None          # the per-pass cache is only valid inside this method
         return working_lines
 
     def find_merge_candidates(
@@ -338,11 +407,17 @@ class FaultLineMerger:
         """
         target_line = lines[target_idx]
         candidates = []
+        ends = getattr(self, "_ends", None)
+        if ends is None or len(ends) != len(lines):
+            ends = None
+        tends = ends[target_idx] if ends is not None else self._line_ends(target_line)
 
         # Check each endpoint of the target line
         for target_endpoint in ["start", "end"]:
             # Get small bounding box around this endpoint
-            endpoint_bounds = self.get_endpoint_bounds(target_line, target_endpoint)
+            px, py = tends[0] if target_endpoint == "start" else tends[3]
+            tol = self.distance_tolerance
+            endpoint_bounds = (px - tol, py - tol, px + tol, py + tol)
             
             # Create a box geometry for the query
             query_box = box(*endpoint_bounds)
@@ -355,12 +430,12 @@ class FaultLineMerger:
                 if candidate_idx == target_idx:
                     continue
 
-                candidate_line = lines[candidate_idx]
+                cends = ends[candidate_idx] if ends is not None else self._line_ends(lines[candidate_idx])
 
                 # Check both endpoints of the candidate line
                 for candidate_endpoint in ["start", "end"]:
-                    can_merge, score = self.lines_can_merge(
-                        target_line, candidate_line, target_endpoint, candidate_endpoint
+                    can_merge, score = self._can_merge_ends(
+                        tends, cends, target_endpoint, candidate_endpoint
                     )
 
                     if can_merge:

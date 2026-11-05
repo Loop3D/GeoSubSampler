@@ -1,3 +1,4 @@
+import os
 import geopandas as gpd
 import networkx as nx
 from shapely.geometry import Point, LineString
@@ -34,6 +35,10 @@ class FaultsGraph:
         """
         
         # Ensure we're working with LineString geometries
+        # Multi-part lines (e.g. faults split into arcs by Simplify Map) are
+        # split into their parts, each keeping the attributes of its feature.
+        if (gdf.geometry.type == 'MultiLineString').any():
+            gdf = gdf.explode(index_parts=False)
         gdf = gdf[gdf.geometry.type == 'LineString']
         
         # Create a graph
@@ -44,8 +49,7 @@ class FaultsGraph:
         
         # First pass: collect all vertices and count occurrences
         print("Collecting vertices...")
-        for idx, row in gdf.iterrows():
-            line = row.geometry
+        for line in gdf.geometry.values:
             coords = list(line.coords)
             
             for coord in coords:
@@ -83,8 +87,9 @@ class FaultsGraph:
         print("Creating edges...")
         edge_id = 1  # Start edge IDs from 1
         
-        for idx, row in gdf.iterrows():
-            line = row.geometry
+        attr_cols = [c for c in gdf.columns if c != 'geometry']
+        records = gdf[attr_cols].to_dict('records') if attr_cols else [{} for _ in range(len(gdf))]
+        for idx, line, row in zip(gdf.index, gdf.geometry.values, records):
             coords = list(line.coords)
             
             # Find intersection points along this line
@@ -118,9 +123,8 @@ class FaultsGraph:
                 }
                 
                 # Add any additional attributes from the original shapefile
-                for col in gdf.columns:
-                    if col != 'geometry':
-                        edge_attrs[col] = row[col]
+                for col in attr_cols:
+                    edge_attrs[col] = row[col]
                 
                 G.add_edge(start_node, end_node, **edge_attrs)
                 edge_id += 1  # Increment for next edge
@@ -1517,7 +1521,7 @@ class FaultsGraph:
 
 
     # Example usage
-    def CalcFaultsGraph(self,shapefile_path):
+    def CalcFaultsGraph(self,shapefile_path, output_dir=None):
         # Convert shapefile to network graph
         #shapefile_path = "waxi4_faults_utm29_merged.shp"  # Replace with your shapefile path
         
@@ -1532,8 +1536,7 @@ class FaultsGraph:
             self.find_paths_in_components(G_detailed)
             
             # Create simplified graph
-            G_simplified_simple = self.create_simplified_graph_simple(G_detailed)
-            #G_simplified_simple=add_centrality_measures(G_simplified_simple)
+            # (a second, "simple" simplified graph used to be built here and never used)
             G_simplified_full = self.create_simplified_graph_full(G_detailed)
             
             # Analyze the simplified graph
@@ -1549,7 +1552,10 @@ class FaultsGraph:
             #                    original_gdf, prefix="detailed")
             
             nodes=shapefile_path.replace(".shp","_nodes.shp")
-            edges=shapefile_path.replace(".shp","_edges.shp")            
+            edges=shapefile_path.replace(".shp","_edges.shp")
+            if output_dir:                       # write the results into this folder instead of beside the input
+                nodes = os.path.join(output_dir, os.path.basename(nodes))
+                edges = os.path.join(output_dir, os.path.basename(edges))
             
             # Save simplified graph
             self.save_graph_to_shapefile(G_simplified_full,  nodes, edges, 

@@ -198,6 +198,125 @@ from collections import defaultdict
 VALIDATE_GEOMETRY = True
 
 
+def _vw_triangle_area(x, y, scale, i, p, q):
+    """Effective area of the triangle vertex i forms with its neighbours p and q."""
+    return abs(x[i] * (y[p] - y[q]) +
+               x[p] * (y[q] - y[i]) +
+               x[q] * (y[i] - y[p])) / 2.0 * scale[i]
+
+
+def _vw_open_core(x, y, free, scale, threshold):
+    """
+    Visvalingam-Whyatt on an open polyline: returns the list of vertex indices kept.
+
+    ``x`` / ``y`` are coordinate lists, ``free[i]`` is True for removable vertices (the two
+    end vertices and constrained vertices are never removed) and ``scale[i]`` multiplies a
+    vertex's triangle area (soft-exterior resistance).  The vertex with the smallest
+    effective area is removed until that area reaches ``threshold``.
+
+    A min-heap of (area, vertex, version) tuples is kept; when a vertex is removed only its
+    two neighbours get new entries and out-of-date entries are skipped when they surface, so
+    the cost is O(n log n) rather than re-sorting the whole heap after every removal.
+    """
+    n = len(x)
+    prv = list(range(-1, n - 1))
+    nxt = list(range(1, n + 1))
+    alive = [True] * n
+    ver = [0] * n
+    heap = [(_vw_triangle_area(x, y, scale, i, prv[i], nxt[i]), i, 0)
+            for i in range(1, n - 1) if free[i]]
+    heapq.heapify(heap)
+    while heap:
+        area, i, v = heap[0]
+        if not alive[i] or v != ver[i]:
+            heapq.heappop(heap)
+            continue
+        if not math.isfinite(area) or area >= threshold:
+            break
+        heapq.heappop(heap)
+        alive[i] = False
+        p, q = prv[i], nxt[i]
+        nxt[p] = q
+        prv[q] = p
+        for j in (p, q):
+            if free[j] and alive[j]:
+                ver[j] += 1
+                heapq.heappush(heap, (_vw_triangle_area(x, y, scale, j, prv[j], nxt[j]), j, ver[j]))
+    return [i for i in range(n) if alive[i]]
+
+
+def _vw_ring_core(x, y, free, scale, threshold, minimum_points):
+    """
+    Visvalingam-Whyatt on a closed ring (no repeated closing vertex): returns the indices kept,
+    in ring order starting at the first surviving vertex, or None if fewer than 3 survive.
+
+    Same removal order as :func:`_vw_open_core`, plus the self-intersection guard: a removal
+    is refused (and the vertex kept for good) if the edge that would replace its two
+    neighbours properly crosses any ring edge that does not touch it.  The guard is a
+    vectorised numpy test over the current ring edges.
+    """
+    n = len(x)
+    xa = np.asarray(x, dtype=float)
+    ya = np.asarray(y, dtype=float)
+    prv = [(i - 1) % n for i in range(n)]
+    nxt = [(i + 1) % n for i in range(n)]
+    nxt_a = np.array(nxt, dtype=np.int64)
+    alive = [True] * n
+    alive_a = np.ones(n, dtype=bool)
+    frozen = [False] * n
+    ver = [0] * n
+    heap = [(_vw_triangle_area(x, y, scale, i, prv[i], nxt[i]), i, 0)
+            for i in range(n) if free[i]]
+    heapq.heapify(heap)
+    n_alive = n
+    while heap:
+        if n_alive <= minimum_points:
+            break
+        area, i, v = heap[0]
+        if not alive[i] or frozen[i] or v != ver[i]:
+            heapq.heappop(heap)
+            continue
+        if not math.isfinite(area) or area >= threshold:
+            break
+        heapq.heappop(heap)
+        p, q = prv[i], nxt[i]
+
+        # self-intersection guard: would the new edge p -> q cross a ring edge not touching it?
+        c = np.flatnonzero(alive_a)
+        d = nxt_a[c]
+        use = (c != p) & (c != i) & (c != q) & (d != p)
+        c, d = c[use], d[use]
+        rx = xa[q] - xa[p]
+        ry = ya[q] - ya[p]
+        sx = xa[d] - xa[c]
+        sy = ya[d] - ya[c]
+        denom = rx * sy - ry * sx
+        with np.errstate(divide='ignore', invalid='ignore'):
+            qpx = xa[c] - xa[p]
+            qpy = ya[c] - ya[p]
+            tt = (qpx * sy - qpy * sx) / denom
+            uu = (qpx * ry - qpy * rx) / denom
+            crosses = ((np.abs(denom) >= 1e-12) & (tt > 1e-10) & (tt < 1.0 - 1e-10)
+                       & (uu > 1e-10) & (uu < 1.0 - 1e-10))
+        if crosses.any():
+            frozen[i] = True          # keep this vertex from now on
+            continue
+
+        alive[i] = False
+        alive_a[i] = False
+        n_alive -= 1
+        nxt[p] = q
+        prv[q] = p
+        nxt_a[p] = q
+        for j in (p, q):
+            if free[j] and alive[j] and not frozen[j]:
+                ver[j] += 1
+                heapq.heappush(heap, (_vw_triangle_area(x, y, scale, j, prv[j], nxt[j]), j, ver[j]))
+    if n_alive < 3:
+        return None
+    return [i for i in range(n) if alive[i]]
+
+
 class TriangleCalculator:
     """
     Represents a vertex in the Visvalingam-Whyatt algorithm as part of a triangular
@@ -287,16 +406,18 @@ class SimplificationEngine:
         self.quantitization_factor = (quant_value, quant_value)
 
     def quantitize(self, point: Tuple[float, float]) -> Tuple[float, float]:
-        qx = int(round(point[0] / self.quantitization_factor[0])) * self.quantitization_factor[0]
-        qy = int(round(point[1] / self.quantitization_factor[1])) * self.quantitization_factor[1]
-        return (qx, qy)
+        fx, fy = self.quantitization_factor
+        return (int(round(point[0] / fx)) * fx, int(round(point[1] / fy)) * fy)
 
-    def create_segment_hash(self, point1, point2) -> str:
-        p1 = self.quantitize(point1)
-        p2 = self.quantitize(point2)
-        if (p1[0], p1[1]) <= (p2[0], p2[1]):
+    @staticmethod
+    def _segment_hash_q(p1, p2) -> str:
+        """Segment hash from two already-quantitized points."""
+        if p1 <= p2:
             return f"{p1[0]},{p1[1]}|{p2[0]},{p2[1]}"
         return f"{p2[0]},{p2[1]}|{p1[0]},{p1[1]}"
+
+    def create_segment_hash(self, point1, point2) -> str:
+        return self._segment_hash_q(self.quantitize(point1), self.quantitize(point2))
 
     def _iter_all_coords(self, geom_dict):
         """Yield every coordinate from a fiona geometry dict."""
@@ -315,10 +436,11 @@ class SimplificationEngine:
     # BOUNDARY SEGMENT REGISTRATION
     # =========================================================================
 
-    def _register_boundary_segments_typed(self, feature_id, points_list, feature_type):
+    def _register_boundary_segments_typed(self, feature_id, points_list, feature_type, quantitized=None):
         self.feature_types[feature_id] = feature_type
+        q = quantitized if quantitized is not None else [self.quantitize(p) for p in points_list]
         for i in range(len(points_list) - 1):
-            seg_hash = self.create_segment_hash(points_list[i], points_list[i + 1])
+            seg_hash = self._segment_hash_q(q[i], q[i + 1])
             self.shared_boundaries[seg_hash].append(
                 {'id': feature_id, 'type': feature_type, 'segment_index': i}
             )
@@ -345,21 +467,22 @@ class SimplificationEngine:
         for i, pt in enumerate(points_list):
             if i == 0 or pt != points_list[i - 1]:
                 cleaned.append(pt)
+        quant = [self.quantitize(p) for p in cleaned]            # each point quantitized once
         if feature_id:
-            self._register_boundary_segments_typed(feature_id, cleaned, feature_type)
+            self._register_boundary_segments_typed(feature_id, cleaned, feature_type, quant)
         if VALIDATE_GEOMETRY:
             dict_check = {}
         for index, point in enumerate(cleaned):
-            qpt = self.quantitize(point)
+            qpt = quant[index]
             if VALIDATE_GEOMETRY:
                 if qpt in dict_check:
                     continue
                 dict_check[qpt] = point
             qnbrs = []
             if index > 0:
-                qnbrs.append(self.quantitize(cleaned[index - 1]))
+                qnbrs.append(quant[index - 1])
             if index + 1 < len(cleaned):
-                qnbrs.append(self.quantitize(cleaned[index + 1]))
+                qnbrs.append(quant[index + 1])
             if qpt in neighbors:
                 if set(neighbors[qpt]) != set(qnbrs):
                     junctions[qpt] = 1
@@ -1114,57 +1237,22 @@ class SimplificationEngine:
         constraint_indices = self.get_shared_boundary_constraints_refined(coords)
         use_soft           = bool(self.exterior_vertices)
 
-        triangle_array = []
-        for index in range(1, len(coords) - 1):
-            is_constrained = index in constraint_indices
+        n = len(coords)
+        free  = [False] * n
+        scale = [1.0] * n
+        for index in range(1, n - 1):
+            if index in constraint_indices:
+                continue
+            free[index] = True
             # Apply soft-exterior scaling if this vertex is on the dataset boundary
-            scale = 1.0
-            if use_soft and not is_constrained:
-                if self.quantitize(coords[index]) in self.exterior_vertices:
-                    scale = self.soft_scale
-            triangle_array.append(
-                TriangleCalculator(coords[index], index, is_constrained, scale))
-
-        if not triangle_array:
+            if use_soft and self.quantitize(coords[index]) in self.exterior_vertices:
+                scale[index] = self.soft_scale
+        if not any(free):
             return line
 
-        start_tri = TriangleCalculator(coords[0],  0,               True)
-        end_tri   = TriangleCalculator(coords[-1], len(coords) - 1, True)
-
-        for i, t in enumerate(triangle_array):
-            t.prevTriangle = triangle_array[i - 1] if i > 0 else start_tri
-            t.nextTriangle = triangle_array[i + 1] if i < len(triangle_array) - 1 else end_tri
-        if triangle_array:
-            start_tri.nextTriangle = triangle_array[0]
-            end_tri.prevTriangle   = triangle_array[-1]
-        else:
-            start_tri.nextTriangle = end_tri
-            end_tri.prevTriangle   = start_tri
-
-        unconstrained = [t for t in triangle_array if not t.is_constrained]
-        if not unconstrained:
-            return line
-
-        heapq.heapify(unconstrained)
-        removed = 0
-
-        while unconstrained:
-            heapq.heapify(unconstrained)
-            min_area = unconstrained[0].calcArea()
-            if not math.isfinite(min_area) or min_area >= threshold:
-                break
-            t = heapq.heappop(unconstrained)
-            t.prevTriangle.nextTriangle = t.nextTriangle
-            t.nextTriangle.prevTriangle = t.prevTriangle
-            removed += 1
-
-        simplified = [start_tri.point]
-        node = start_tri.nextTriangle
-        while node is not end_tri:
-            simplified.append(node.point)
-            node = node.nextTriangle
-        simplified.append(end_tri.point)
-
+        keep = _vw_open_core([c[0] for c in coords], [c[1] for c in coords],
+                             free, scale, threshold)
+        simplified = [coords[i] for i in keep]
         return LineString(simplified) if len(simplified) >= 2 else line
 
     def visvalingam_whyatt_ring(self, ring: LinearRing, threshold: float,
@@ -1193,93 +1281,23 @@ class SimplificationEngine:
         constraint_indices = self.get_shared_boundary_constraints_refined(coords)
         use_soft           = bool(self.exterior_vertices)
 
-        triangle_ring = []
+        n = len(coords)
+        free  = [False] * n
+        scale = [1.0] * n
         for index, point in enumerate(coords):
-            is_constrained = index in constraint_indices
-            scale = 1.0
-            if use_soft and not is_constrained:
-                if self.quantitize(point) in self.exterior_vertices:
-                    scale = self.soft_scale
-            triangle_ring.append(
-                TriangleCalculator(point, index, is_constrained, scale))
-
-        n = len(triangle_ring)
-        for i, t in enumerate(triangle_ring):
-            t.prevTriangle = triangle_ring[(i - 1) % n]
-            t.nextTriangle = triangle_ring[(i + 1) % n]
-
-        unconstrained   = [t for t in triangle_ring if not t.is_constrained]
-        constrained_cnt = sum(1 for t in triangle_ring if t.is_constrained)
-
-        if not unconstrained:
+            if index in constraint_indices:
+                continue
+            free[index] = True
+            if use_soft and self.quantitize(point) in self.exterior_vertices:
+                scale[index] = self.soft_scale
+        if not any(free):
             return ring
 
-        heapq.heapify(unconstrained)
-        removed = 0
-
-        while unconstrained:
-            heapq.heapify(unconstrained)
-            if (len(unconstrained) + constrained_cnt) <= minimum_points:
-                break
-            min_area = unconstrained[0].calcArea()
-            if not math.isfinite(min_area) or min_area >= threshold:
-                break
-            t = heapq.heappop(unconstrained)
-            prev = t.prevTriangle
-            nxt  = t.nextTriangle
-
-            # ── Ring self-intersection guard ──────────────────────────────
-            # Before committing to the removal of t, verify that the proposed
-            # replacement edge (prev.point → nxt.point) does NOT cross any
-            # non-adjacent edge in the current ring.  If it would, skip this
-            # vertex — it stays in triangle_ring as an effectively-constrained
-            # vertex and is never considered again (already popped from heap).
-            #
-            # This prevents the "bowtie" artefact in thin polygons where both
-            # long edges, when simplified to near-straight lines, would cross
-            # at the tapering tip.
-            _new_p1 = prev.point
-            _new_p2 = nxt.point
-            _would_cross = False
-            # Walk from nxt.next all the way around to prev (exclusive).
-            # We skip the 4 edges directly adjacent to the new edge:
-            #   prev.prev → prev   (shares endpoint prev)
-            #   prev → t           (being removed)
-            #   t → nxt            (being removed)
-            #   nxt → nxt.next     (shares endpoint nxt)
-            _chk = nxt.nextTriangle
-            while _chk is not prev:
-                _chk_nxt = _chk.nextTriangle
-                if _chk_nxt is not prev:   # skip edge ending at prev (shares endpoint)
-                    if _segments_cross(_new_p1, _new_p2, _chk.point, _chk_nxt.point):
-                        _would_cross = True
-                        break
-                _chk = _chk_nxt
-            if _would_cross:
-                # Keep t in the ring; treat as constrained from now on.
-                constrained_cnt += 1
-                continue
-            # ──────────────────────────────────────────────────────────────
-
-            prev.nextTriangle = nxt
-            nxt.prevTriangle  = prev
-            for i, tr in enumerate(triangle_ring):
-                if tr is t:
-                    triangle_ring.pop(i)
-                    break
-            removed += 1
-
-        if len(triangle_ring) < 3:
+        keep = _vw_ring_core([c[0] for c in coords], [c[1] for c in coords],
+                             free, scale, threshold, minimum_points)
+        if keep is None:
             return None
-
-        start  = triangle_ring[0]
-        coords_out = []
-        node = start
-        while True:
-            coords_out.append(node.point)
-            node = node.nextTriangle
-            if node is start:
-                break
+        coords_out = [coords[i] for i in keep]
 
         if len(coords_out) < 3:
             return None

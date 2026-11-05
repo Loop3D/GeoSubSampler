@@ -9,6 +9,11 @@ GeoSubSampler is designed to help geologists and GIS professionals manage large 
 - Geological polygons (rock units, formations)
 - Fault and contact lines
 
+Beyond subsampling it can also clean a polygon and fault map so that it is topologically consistent (**Fix Map**),
+add shared nodes to it (**Densify Nodes**), read the
+stratigraphic offset across faults, simplify a map while preserving its topology, and rescale a whole map
+following the Töpfer & Pillewizer rule.
+
 
 ![GeoSubSampler image](GUI.png)
 
@@ -21,12 +26,19 @@ GeoSubSampler is designed to help geologists and GIS professionals manage large 
 5. Enable the plugin through QGIS Plugin Manager
 6. The plugin will appear as a dockable widget in QGIS
 
-## ArcGIS Pro version (v0.3)
+## ArcGIS Pro version
+
+### Where the results go
+Every time you press a button, the results (shapefiles, reports, progress files) are written to a **new folder named
+after the tool and the time**, e.g. `Fix_map_20261105_164049`, next to the input layer (or in the project / temp
+folder if that is not writable). A series (Rescale Map, Töpfer & Pillewizer scaling) puts all its steps in one
+folder; the next button press starts a new one, so earlier results are never overwritten or mixed up. In QGIS the
+new layers are added to a layer-panel group called **Outputs** (created if it does not exist), newest on top.
 
 An ArcGIS Pro equivalent of the plugin is in the [ARCGIS](ARCGIS/) folder. It is a Python toolbox
 (`ARCGIS/GeoSubSampler.pyt`) whose **Launch GeoSubSampler GUI** tool opens a Tkinter window with the same
-groups and settings as the QGIS dock widget (orientation subsampling, fault processing, geology polygons and
-Töpfer & Pillewizer scaling), using the same `calcs` code. The window lists the point, line and polygon
+groups and settings as the QGIS dock widget (orientation subsampling, fault processing, geology polygons
+including Densify Nodes, and Töpfer & Pillewizer scaling), using the same `calcs` code. The window lists the point, line and polygon
 layers in your project, and results are added to the map automatically with the symbology of the layer they
 were made from.
 
@@ -152,7 +164,7 @@ Retains orientation points based on proximity to geological contacts and angular
 
 #### Segment Merging
 Merges connected fault segments based on geometric criteria.   
-WARNING: This is not particulary optimised and may take hours to complete on large (>10k polylines) datasets   
+About half a second for 1,400 faults; the time grows roughly in proportion to the number of faults.   
 
 **Parameters:**
 - **Distance Tolerance**: Maximum distance between line endpoints for merging
@@ -178,7 +190,17 @@ Filters fault lines based on minimum length criteria.
 - **Fault Graph**: Calculate Network Graph parameters for fault network   
   - Does not actual filter, just creates new layer   
 
-- **Fault Stratigraphic Offset**: Maximum stratigraphic offset accross fault for start-, mid- and end-points for fault network   
+- **Fault Stratigraphic Offset**: Stratigraphic offset across each fault   
+  - The geology is read on each side of the fault (a few metres either side) at **every point where the fault
+    crosses a geological contact** (polygon boundary), which includes triple junctions on the fault. Where a
+    fault runs along a contact the middle of the shared section is used. Faults that meet no contact are
+    sampled at their start, middle and end (stepping 50 m either side), so every fault gets an answer.
+  - Each fault gets its maximum offset level (`max_off_lv`: -1 edge of map, 0 no offset, higher numbers a more
+    general stratigraphic level at which the two sides differ), where it was found (`max_off_x`, `max_off_y`),
+    how many samples were used (`n_samples`), and how many showed an offset (`n_offset`), no offset
+    (`n_nooffset`) or the edge of the map (`n_edge`); `sample_src` is `contacts` or `ends`.
+  - The sample points themselves are saved as `<output>_samples.shp` (fault, location, offset level and the
+    units on each side) and added to the map.
   - Does not actual filter, just creates new layer   
 
 ### 3. Polygon Processing
@@ -227,6 +249,66 @@ Define the hierarchy for polygon merging decisions:
 - **Area Tolerance (m2)**: Area threshold for exterior vertices
   - *Description*:  Decimates map polygons and associated faults composed of line segments to a similar curves with fewer vertices. Vertices to be removed are those whose triangular area (area defined by the vertex and its two neighbours) exceeds the threshold. When a polygon vertex is to be removed that coincides with a fault vertex, the two will be removed together to maintain their topological relationships.
 
+#### Fix Map
+*A full explanation of the process, step by step, is in [How Fix Map works](docs/FixMap.md).*
+
+Cleans up the small digitising errors that stop a geological map from being topologically perfect, within a
+**Tolerance (m)** (degrees are converted approximately). Nothing moves by more than the tolerance in one pass.
+It handles, in order:
+
+1. invalid polygons are repaired (`buffer(0)`; also available on its own as **Repair (buffer 0)**);
+2. exact duplicate polygons and faults are removed (the first is kept);
+3. a polygon lying (at least 90% of its area) inside a larger polygon gets cut out of it as a hole;
+4. small gaps and overlaps between polygons are closed, nodes missing on one side of a shared boundary are added,
+   near-coincident nodes at triple junctions become one node, and faults that run almost along a contact or
+   another fault are snapped onto it and share its nodes. Bigger polygons are never moved by smaller ones, and
+   polygons are never moved by faults (longer faults win over shorter ones);
+5. nodes are added where polygon boundaries and faults cross, so crossing features share a node (this is what
+   Fault Graph needs to connect faults).
+
+- **Remaining overlaps**: overlaps left at the end (of any width, e.g. two polygons that partly
+  cover each other) are cut out of one of the two polygons, so that no polygons overlap any more. *Keep smaller
+  polygon* (default) cuts the overlap out of the bigger polygon, as for a polygon inside another; *Keep larger
+  polygon* cuts it out of the smaller one; *Leave overlaps* does nothing. A polygon that is entirely overlapped
+  disappears (listed in the report).
+- **Fill enclosed gaps** (on by default): every gap completely surrounded by polygons, whatever its width or
+  size, is added to the neighbouring polygon that shares the longest boundary with it. This is done first, before
+  anything is snapped (the filled polygon takes over its neighbours' own vertices along the gap), and again at the
+  end for any gap made since. Gaps along the edge of the map are not touched. Untick it to keep wide unmapped
+  areas (e.g. lakes) as holes.
+
+No vertex is moved by more than the tolerance (the report gives the largest move). Two vertices that snapped onto
+the same nodes can leave a straight chord where the original line had a short detour, so a new line can lie
+further than the tolerance from the original at a few places; the report gives that distance too.
+
+A polygon that lies on top of a bigger one has a hole cut in the bigger one. If smaller polygons completely
+cover a bigger one, nothing is left of it and it is removed; the report lists these.
+
+With *Fill enclosed gaps* and *Remaining overlaps* on, no enclosed gap or overlap is left, whatever its width;
+with them off, gaps and overlaps wider than the tolerance remain. A text
+report (before -> after counts of unmatched nodes, near-duplicate nodes, invalid polygons, duplicates, polygons
+inside polygons, gaps and overlap area, plus the index of every removed feature) is shown, logged and saved as
+`<layer>_fixed_<tol>_report.txt`, in the run folder with the output layers (named `<layer>_fixed_<tol>`).
+Checked on a 1,900-polygon / 4,430-fault map (670,000 / 350,000 vertices, about 3 minutes): GEOS had to add 6,727
+nodes to node the original linework and none to node the result.
+
+#### Densify Nodes
+Inserts nodes so that no segment is longer than a chosen spacing, **keeping polygons and faults topologically
+consistent**: a new node on a boundary shared by two polygons, or run along by a fault, is the same node in
+all of them. (Densifying each polygon separately does not give this: tiny floating-point differences between
+the two directions in which a shared edge is traversed leave the two copies with slightly different nodes.)
+
+- **Node Spacing (m)**: the largest distance between nodes. Each segment is divided into equal parts no longer
+  than this, so new nodes are between half the spacing and the spacing apart. Shapes do not change. For
+  geographic coordinates the distance is converted from degrees approximately (111 km per degree of latitude,
+  scaled by cos(latitude) for longitude).
+- **Shared node at fault crossing**: also adds a node, shared by both features, where a fault or polygon boundary
+  crosses a polygon boundary, and where a vertex lies on another feature's segment (a T-junction).
+- Vertices closer together than 1 micrometre are merged first: nodes that are "shared" in a file are often
+  only shared to within rounding noise, which would otherwise leave the two sides with different nodes.
+- Uses the selected polygon and/or fault layer; with both, nodes are shared between them. Output layers are
+  named `<layer>_dense_<spacing>`. About half a second for 1,100 polygons and 1,400 faults.
+
 ## Töpfer-Pillewizer 1996 rescaling
 The TP scaling rule: TN = ON * (OS/TS)^(x/2)   
 - TN  — target number of objects after generalisation
@@ -252,8 +334,18 @@ Output files follow the pattern: `[original_name]_[method]_[parameters].shp`
 - If a file with the same name exists, a random 5-digit suffix is added
 
 ### Performance Considerations
-- **Segment Merging**: Very slow for large datasets (>1 second per object)
-- **Large Datasets**: Consider using subsampling methods before applying computationally intensive operations
+Typical times on real data (28,600 bedding points; 1,121 polygons with 144,000 vertices; 1,403 faults):
+- Kent / Kent Outlier / Carmichael grid methods: about a second at 5 km cells. The iterative Kent Outlier
+  option grows with the square of the number of points in the largest cell, so very large cells (several
+  thousand points) are slow.
+- First Order sampling: about a second (it was ~100 s before it used a spatial index).
+- Merge Segments, Fault Length, Fault Graph, Fault Strat Offset, Densify: from a fraction of a second to a few
+  seconds. Cluster faults: several seconds.
+- Rescale Map: a few seconds. Simplify Map: the slowest tool (about 10-15 s here); most of the time is in
+  the topology preparation rather than in the simplification itself.
+- Auto-fit to N points counts grid cells directly and no longer reruns the method for each trial size.
+- The heavier libraries (matplotlib, scikit-learn, networkx) are loaded only when a tool that needs them is
+  first used, so the plugin starts quickly.
 
 ## Error Handling
 
@@ -296,9 +388,37 @@ Email: mark.jessell@uwa.edu.au@gmail.com
    
 ## Version Information
 
+- Current version: 0.5
 - Begin Date: 2025-07-28
 - Generated by: Plugin Builder
 - Plugin Builder: http://g-sherman.github.io/Qgis-Plugin-Builder/
+
+## Changelog
+
+**0.5**
+- *Faster:* First Order sampling (~100x, using a spatial index), Kent / Carmichael grid methods (Kent ~55x,
+  Carmichael ~28x, Kent Outlier 5-6x, the iterative option ~2.5x), Visvalingam-Whyatt simplification, Rescale Map
+  (~2x), Merge Segments (~7x), Fault Graph, Cluster faults. Results are identical to the previous version except
+  where noted below. The heavier libraries (matplotlib, scikit-learn, networkx, fiona) load only when first
+  needed, so the plugin starts faster.
+- *New:* **Fix Map** (QGIS and ArcGIS Pro) - repairs invalid polygons, removes doubled polygons and faults, cuts holes
+  for polygons inside polygons, closes small gaps/overlaps, matches nodes along shared boundaries and at triple
+  junctions, snaps faults onto nearby contacts, and writes a text report.
+- *New:* **Densify Nodes** (QGIS and ArcGIS Pro) - shared new nodes along polygon and fault boundaries.
+- *Changed:* **Fault Strat Offset** samples every fault/contact crossing instead of only the start, middle and
+  end of each fault, and saves the sample points and extra per-fault columns (see above). **Cluster faults**
+  writes only the best result (`write_all=True` in the code writes one file per cluster count). **First Order**
+  now uses the best-aligned of several equally near contact segments, so its result no longer depends on the
+  order of the data (it can keep a few more points than before).
+
+**0.4** - New Kent estimator with an optional Min kappa filter and count / kappa / beta attributes; Kent Outlier
+with an optional iterative mode; new Carmichael outlier method; Grid Cell Avg removed (identical to Kent without
+kappa); much faster auto-fit to N points; a check that stops the run when the Dip field holds values outside
+0-90 degrees (Dip and Dip Direction fields swapped).
+
+**0.3.1** - Loads on QGIS 4 (Qt6) as well as QGIS 3.
+
+**0.3** - ArcGIS Pro version (Python toolbox with a Tkinter interface).
 
 ---
 
