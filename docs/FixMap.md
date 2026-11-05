@@ -114,6 +114,7 @@ map. Two things keep this fast and safe:
 * **Local passes.** After the first full pass, a pass only looks around the points that changed in the previous pass
   (including along any segment that moved, since a long segment swings when one end moves). When local passes find
   nothing, **one full pass** checks that nothing was missed; if it finds something, local passes continue.
+* **Stall guard.** If 12 passes in a row insert the same nodes and move nothing, the passes stop (reported).
 * **Displacement limit.** The program tracks where every vertex started and refuses a move that would put it more than
   the tolerance from there, however many passes it takes.
 
@@ -147,7 +148,7 @@ Both change the geometry, so another short conform follows to give the new edges
 
 ### 4.5 Crossings, final repair, report
 
-* **Crossing nodes.** Nodes are added wherever lines cross: polygon boundaries, faults against polygon boundaries, and
+* **Crossing nodes.** (Done again once if this step changed anything.) Nodes are added wherever lines cross: polygon boundaries, faults against polygon boundaries, and
   faults against each other, plus T-junctions. Both lines get the same node, which is what Fault Graph needs to connect
   faults. A local conform then merges any crossing node that landed within the tolerance of another node.
 * **Final repair.** Any polygon that is still self-intersecting is repaired.

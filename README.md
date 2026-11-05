@@ -253,7 +253,7 @@ Define the hierarchy for polygon merging decisions:
 *A full explanation of the process, step by step, is in [How Fix Map works](docs/FixMap.md).*
 
 Cleans up the small digitising errors that stop a geological map from being topologically perfect, within a
-**Tolerance (m)** (degrees are converted approximately). Nothing moves by more than the tolerance in one pass.
+**Tolerance (m)** (degrees are converted approximately). No vertex ends up more than the tolerance from where it started.
 It handles, in order:
 
 1. invalid polygons are repaired (`buffer(0)`; also available on its own as **Repair (buffer 0)**);

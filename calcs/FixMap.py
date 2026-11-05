@@ -11,7 +11,8 @@ short (geometry is handled as a flat stream of coordinates, all vectorised):
 
 1. Repair invalid polygons (buffer(0), make_valid as a fallback).
 2. Remove exact duplicate polygons / faults.
-3. A polygon at least 90% inside a bigger polygon gets cut out of it as a hole.
+3. A polygon at least 90% inside a bigger polygon gets cut out of it as a hole; then every enclosed gap is
+   filled with the neighbour that shares the longest boundary (gaps first, so the snapping has less to do).
 4. Conform (``_conform``).  Every path (polygon ring or fault) has a rank: polygons before faults, bigger
    before smaller, longer faults before shorter.  A vertex within the tolerance of a higher-ranked line moves
    onto its nearest node, or onto the nearest point of its segment (which becomes a node); a higher-ranked
@@ -21,8 +22,8 @@ short (geometry is handled as a flat stream of coordinates, all vectorised):
    full check).
 5. Rounds: the geometries are rebuilt, the polygons that changed are checked (repair, holes for contained
    polygons, thin overlaps cut from the smaller polygon) and the conform repeats.
-6. Once settled: the remaining overlaps are cut out of one polygon, and gaps are filled (thin ones, then every
-   enclosed gap) with the neighbour that shares the longest boundary.
+6. Once settled (or out of rounds): the remaining overlaps are cut out of one polygon, and any new gaps are
+   filled; another conform follows.
 7. Nodes are added where lines cross (polygon boundaries and faults), then a local conform; anything still
    self-intersecting is repaired.
 8. A text report lists what was found before and what remains.
