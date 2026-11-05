@@ -1,3 +1,4 @@
+import os
 import geopandas as gpd
 import networkx as nx
 from shapely.geometry import Point, LineString
@@ -34,6 +35,10 @@ class FaultsGraph:
         """
         
         # Ensure we're working with LineString geometries
+        # Multi-part lines (e.g. faults split into arcs by Simplify Map) are
+        # split into their parts, each keeping the attributes of its feature.
+        if (gdf.geometry.type == 'MultiLineString').any():
+            gdf = gdf.explode(index_parts=False)
         gdf = gdf[gdf.geometry.type == 'LineString']
         
         # Create a graph
@@ -1516,7 +1521,7 @@ class FaultsGraph:
 
 
     # Example usage
-    def CalcFaultsGraph(self,shapefile_path):
+    def CalcFaultsGraph(self,shapefile_path, output_dir=None):
         # Convert shapefile to network graph
         #shapefile_path = "waxi4_faults_utm29_merged.shp"  # Replace with your shapefile path
         
@@ -1547,7 +1552,10 @@ class FaultsGraph:
             #                    original_gdf, prefix="detailed")
             
             nodes=shapefile_path.replace(".shp","_nodes.shp")
-            edges=shapefile_path.replace(".shp","_edges.shp")            
+            edges=shapefile_path.replace(".shp","_edges.shp")
+            if output_dir:                       # write the results into this folder instead of beside the input
+                nodes = os.path.join(output_dir, os.path.basename(nodes))
+                edges = os.path.join(output_dir, os.path.basename(edges))
             
             # Save simplified graph
             self.save_graph_to_shapefile(G_simplified_full,  nodes, edges, 

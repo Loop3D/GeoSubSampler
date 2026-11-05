@@ -210,9 +210,12 @@ class App(tk.Tk):
             else canvas.yview_scroll(int(-e.delta / 120), "units")))
 
         self._build_layers(body)
+        self._build_fixmap(body)
+        self._build_densify(body)
         self._build_orientation(body)
         self._build_faults(body)
         self._build_geology(body)
+        self._build_simplify(body)
         self._build_tp(body)
         self._define_tips()
 
@@ -386,6 +389,9 @@ class App(tk.Tk):
                   command=lambda: self._run("Polygon cleaning", self._do_rescale)
                   ).pack(anchor="e", pady=2)
 
+    def _build_simplify(self, p):
+        f = section(p, "Simplify Map")
+        f.pack(fill="x", padx=6, pady=4)
         r = tk.Frame(f, bg=BG)
         r.pack(fill="x", pady=2)
         self.v_area_tol = tk.StringVar(value="10000")
@@ -396,13 +402,34 @@ class App(tk.Tk):
             "Simplify map polygons by area tolerance, respecting fault topology"
             ).pack(side="right")
 
+    def _build_fixmap(self, p):
+        f = section(p, "Fix Map")
+        f.pack(fill="x", padx=6, pady=4)
+        r = tk.Frame(f, bg=BG)
+        r.pack(fill="x", pady=2)
+        self.v_fix_tol = tk.StringVar(value="5")
+        label(r, "Tolerance (m)").pack(side="left")
+        entry(r, self.v_fix_tol, 7).pack(side="left", padx=3)
+        self.v_fix_fill = tk.BooleanVar(value=True)
+        tk.Checkbutton(r, text="Fill enclosed gaps", variable=self.v_fix_fill, bg=BG, font=FONT).pack(side="left", padx=6)
+        self.v_fix_overlap = tk.StringVar(value="Keep smaller polygon")
+        label(r, "Remaining overlaps").pack(side="left", padx=(8, 0))
+        tk.OptionMenu(r, self.v_fix_overlap, "Keep smaller polygon", "Keep larger polygon", "Leave overlaps").pack(side="left", padx=3)
+        tk.Button(r, text="Fix Map", font=FONT_BOLD, width=12,
+                  command=lambda: self._run("Fix map", self._do_fixmap)).pack(side="right")
+        tk.Button(r, text="Repair (buffer 0)", font=FONT_BOLD, width=16,
+                  command=lambda: self._run("Repair polygons", self._do_repair)).pack(side="right", padx=4)
+
+    def _build_densify(self, p):
+        f = section(p, "Densify Faults and Geology")
+        f.pack(fill="x", padx=6, pady=4)
         r = tk.Frame(f, bg=BG)
         r.pack(fill="x", pady=2)
         self.v_dens_spacing = tk.StringVar(value="100")
         self.v_dens_cross = tk.BooleanVar(value=True)
         label(r, "Node Spacing (m)").pack(side="left")
         entry(r, self.v_dens_spacing, 7).pack(side="left", padx=3)
-        tk.Checkbutton(r, text="Shared nodes at crossings", variable=self.v_dens_cross,
+        tk.Checkbutton(r, text="Shared node at fault crossing", variable=self.v_dens_cross,
                        bg=BG, font=FONT).pack(side="left", padx=6)
         tk.Button(r, text="Densify Nodes", font=FONT_BOLD, width=20,
                   command=lambda: self._run("Densify nodes", self._do_densify)).pack(side="right")
@@ -464,6 +491,12 @@ class App(tk.Tk):
             str(self.v_msearch): "Minimum angle mismatch between end segments",
             str(self.v_mjoin): "Maximum angle for newly-formed angle defined by end segments",
             str(self.v_area_tol): "Tolerance for area-based filtering, in m2",
+            str(self.v_fix_tol): ("Features closer together than this (in metres; degrees are converted approximately)\n"
+                                  "are treated as meant to coincide. No vertex moves by more than this."),
+            str(self.v_fix_overlap): ("What to do with overlaps between polygons that are left at the end:\n"
+                                      "Keep smaller polygon: the overlapping part is cut out of the bigger polygon\n"
+                                      "Keep larger polygon: it is cut out of the smaller polygon\n"
+                                      "Leave overlaps: nothing is cut. A polygon that is entirely overlapped disappears."),
             str(self.v_dens_spacing): ("Largest distance between nodes, in metres (degrees are converted "
                                        "approximately).\nEvery segment is divided into equal parts no "
                                        "longer than this."),
@@ -526,9 +559,25 @@ class App(tk.Tk):
                                 "Uses the orientation and fault methods selected above."),
             "Simplify Map": ("Simplify map polygons based on area tolerance, respecting fault "
                              "topology"),
-            "Shared nodes at crossings": (
+            "Shared node at fault crossing": (
                 "Also add a node, shared by both, where a fault or polygon boundary crosses a polygon\n"
                 "boundary, and where a vertex lies on another feature's segment (T-junction)."),
+            "Fix Map": (
+                "Make the selected polygon and fault layers topologically consistent:\n"
+                "- invalid polygons repaired (buffer 0); doubled polygons and faults removed\n"
+                "- polygons lying inside another polygon get a hole in it\n"
+                "- nodes along shared boundaries and at triple junctions made identical; faults snapped onto\n"
+                "  nearby contacts and faults (no vertex moves more than the tolerance)\n"
+                "- gaps completely surrounded by polygons filled; remaining overlaps cut out of one polygon\n"
+                "- nodes added where lines cross\n"
+                "Bigger polygons are never moved by smaller ones, and polygons never by faults.\n"
+                "Saves <layer>_fixed_<tol> and a text report; progress is shown in the log below."),
+            "Fill enclosed gaps": (
+                "At the end, fill every gap completely surrounded by polygons, whatever its size, with the\n"
+                "neighbouring polygon that shares the longest boundary. Gaps along the map edge are not touched."),
+            "Repair (buffer 0)": (
+                "Repair invalid polygons (self-intersections etc.) with buffer(0).\n"
+                "Also done as the first step of Fix Map."),
             "Densify Nodes": (
                 "Add nodes along the selected polygon and fault layers. New nodes on a shared boundary\n"
                 "are identical in the polygon on each side and in any fault running along it.\n"
@@ -551,7 +600,7 @@ class App(tk.Tk):
         for w in walk(self):
             cls = w.winfo_class()
             try:
-                if cls in ("Entry", "TCombobox"):
+                if cls in ("Entry", "TCombobox", "Menubutton"):
                     text = by_var.get(str(w.cget("textvariable")))
                 elif cls in ("Button", "Radiobutton", "Checkbutton"):
                     label_text = w.cget("text")
@@ -663,7 +712,7 @@ class App(tk.Tk):
     def _processor(self):
         from gss_processing import GSSProcessor
         return GSSProcessor(log=self._log, add_output=self._add_output,
-                            fallback_dir=self.fallback_dir)
+                            fallback_dir=self.fallback_dir, run_label=getattr(self, "_run_label", ""))
 
     def _run(self, label_text, fn):
         if self.busy:
@@ -675,6 +724,7 @@ class App(tk.Tk):
             messagebox.showwarning("GeoSubSampler", f"Please enter valid numbers ({exc}).")
             return
         self.busy = True
+        self._run_label = label_text            # names this press's output folder
         self.status.set(f"{label_text} running ...")
         self._log(f"--- {label_text} ---")
 
@@ -803,6 +853,18 @@ class App(tk.Tk):
             return (self._rec("polygon", self.v_polys), self._rec("line", self.v_faults),
                     int(float(self.v_area_tol.get())))
         self._processor().simplify_map(*args)
+
+    def _do_fixmap(self, prepare, args=None):
+        if prepare:
+            return (self._rec("polygon", self.v_polys), self._rec("line", self.v_faults),
+                    float(self.v_fix_tol.get()), bool(self.v_fix_fill.get()),
+                    {"Keep smaller polygon": "smaller", "Keep larger polygon": "larger"}.get(self.v_fix_overlap.get()))
+        self._processor().fix_map(*args)
+
+    def _do_repair(self, prepare, args=None):
+        if prepare:
+            return (self._rec("polygon", self.v_polys),)
+        self._processor().repair_polygons(*args)
 
     def _do_densify(self, prepare, args=None):
         if prepare:

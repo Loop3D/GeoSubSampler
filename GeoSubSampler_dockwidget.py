@@ -73,9 +73,12 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         ml.setContentsMargins(6, 6, 6, 6)
 
         self._build_layer_selectors(ml)
+        self._build_fixmap_group(ml)
+        self._build_densify_group(ml)
         self._build_orientation_group(ml)
         self._build_fault_group(ml)
         self._build_geology_group(ml)
+        self._build_simplify_group(ml)
         self._build_tp_group(ml)
         ml.addStretch()
 
@@ -375,21 +378,44 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         self.pushButton_minPolyArea = QtWidgets.QPushButton("Rescale Map")
         vbox.addWidget(self.pushButton_minPolyArea)
 
-        # Area tolerance + Simplify Map
-        self.lineEdit_area_tolerance = QtWidgets.QLineEdit("10000")
-        self.lineEdit_area_tolerance.setFixedWidth(80)
-        self.pushButton_simplifyMap = QtWidgets.QPushButton("Simplify Map")
-        row_area = QtWidgets.QHBoxLayout()
-        row_area.addWidget(self._lbl("Area Tolerance (m2)"))
-        row_area.addWidget(self.lineEdit_area_tolerance)
-        row_area.addWidget(self.pushButton_simplifyMap)
-        row_area.addStretch()
-        vbox.addLayout(row_area)
+        layout.addWidget(grp)
 
-        # Densify nodes (shared by polygons and faults)
+    # ---- Fix Map group (topology clean-up of faults and geology polygons) --
+
+    def _build_fixmap_group(self, layout):
+        grp = QtWidgets.QGroupBox("Fix Map")
+        vbox = QtWidgets.QVBoxLayout(grp)
+        self.lineEdit_fixmap_tolerance = QtWidgets.QLineEdit("5")
+        self.lineEdit_fixmap_tolerance.setFixedWidth(60)
+        self.comboBox_fixmap_overlap = QtWidgets.QComboBox()
+        self.comboBox_fixmap_overlap.addItems(["Keep smaller polygon", "Keep larger polygon", "Leave overlaps"])
+        self.checkBox_fixmap_fillgaps = QtWidgets.QCheckBox("Fill enclosed gaps")
+        self.checkBox_fixmap_fillgaps.setChecked(True)
+        self.pushButton_repair_polygons = QtWidgets.QPushButton("Repair (buffer 0)")
+        self.pushButton_fixmap = QtWidgets.QPushButton("Fix Map")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self._lbl("Tolerance (m)"))
+        row.addWidget(self.lineEdit_fixmap_tolerance)
+        row.addStretch()
+        row.addWidget(self.pushButton_repair_polygons)
+        row.addWidget(self.pushButton_fixmap)
+        vbox.addLayout(row)
+        row2 = QtWidgets.QHBoxLayout()
+        row2.addWidget(self.checkBox_fixmap_fillgaps)
+        row2.addWidget(self._lbl("Remaining overlaps"))
+        row2.addWidget(self.comboBox_fixmap_overlap)
+        row2.addStretch()
+        vbox.addLayout(row2)
+        layout.addWidget(grp)
+
+    # ---- Densify group (faults and geology polygons) -----------------
+
+    def _build_densify_group(self, layout):
+        grp = QtWidgets.QGroupBox("Densify Faults and Geology")
+        vbox = QtWidgets.QVBoxLayout(grp)
         self.lineEdit_densify_spacing = QtWidgets.QLineEdit("100")
         self.lineEdit_densify_spacing.setFixedWidth(60)
-        self.checkBox_densify_crossings = QtWidgets.QCheckBox("Shared nodes at crossings")
+        self.checkBox_densify_crossings = QtWidgets.QCheckBox("Shared node at fault crossing")
         self.checkBox_densify_crossings.setChecked(True)
         self.pushButton_densify = QtWidgets.QPushButton("Densify Nodes")
         row_dens = QtWidgets.QHBoxLayout()
@@ -399,8 +425,22 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         row_dens.addStretch()
         row_dens.addWidget(self.pushButton_densify)
         vbox.addLayout(row_dens)
+        layout.addWidget(grp)
 
+    # ---- Simplify Map group --------------------------------------------
 
+    def _build_simplify_group(self, layout):
+        grp = QtWidgets.QGroupBox("Simplify Map")
+        vbox = QtWidgets.QVBoxLayout(grp)
+        self.lineEdit_area_tolerance = QtWidgets.QLineEdit("10000")
+        self.lineEdit_area_tolerance.setFixedWidth(80)
+        self.pushButton_simplifyMap = QtWidgets.QPushButton("Simplify Map")
+        row_area = QtWidgets.QHBoxLayout()
+        row_area.addWidget(self._lbl("Area Tolerance (m2)"))
+        row_area.addWidget(self.lineEdit_area_tolerance)
+        row_area.addWidget(self.pushButton_simplifyMap)
+        row_area.addStretch()
+        vbox.addLayout(row_area)
         layout.addWidget(grp)
 
     # ---- Töpfer & Pillewizer scaling group ---------------------------

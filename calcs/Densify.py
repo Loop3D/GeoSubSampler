@@ -83,7 +83,11 @@ def _rebuild_layer(gdf, info, coords, path_id, base):
         for q in np.flatnonzero(ends - shell_pos > 1):            # polygons with holes
             polys[q] = shapely.Polygon(new_rings[shell_pos[q]],
                                        list(new_rings[shell_pos[q] + 1:ends[q]]))
-        new_parts[info["poly_pos"]] = polys
+        # an empty polygon has no rings, so keep it (empty) in its own place
+        keep = info["poly_pos"].copy()
+        ordered = parts[keep].copy()
+        ordered[rp[shell_pos]] = polys
+        new_parts[info["poly_pos"]] = ordered
     if len(info["lines"]):
         line_sel = p >= n_rings
         new_parts[info["line_pos"]] = shapely.linestrings(c[line_sel], indices=p[line_sel] - n_rings)
@@ -149,7 +153,7 @@ def _segment_length_m(lo, hi, geographic):
     return np.hypot(dx, dy)
 
 
-def _insertions(ulo, uhi, u_is_poly, snap_tol):
+def _insertions(ulo, uhi, u_is_poly, snap_tol, line_crossings=False):
     """
     Nodes to add inside unique segments: T-junctions and crossings with polygon boundaries.
     Returns (segment, t along lo->hi, x, y) arrays, sorted by segment and t, de-duplicated.
@@ -171,7 +175,7 @@ def _insertions(ulo, uhi, u_is_poly, snap_tol):
     vi, si = tree.query(shapely.points(uv), predicate="dwithin", distance=snap_tol)
     if len(vi):
         v = uv[vi]
-        ok = u_is_poly[si] | v_is_poly[vi]                       # not line-against-line only
+        ok = (u_is_poly[si] | v_is_poly[vi]) if not line_crossings else np.ones(len(si), dtype=bool)  # not line-against-line only
         ok &= (np.abs(v - ulo[si]).max(axis=1) > snap_tol) & (np.abs(v - uhi[si]).max(axis=1) > snap_tol)
         vi, si, v = vi[ok], si[ok], v[ok]
         t = ((v - ulo[si]) * d[si]).sum(axis=1) / seg_len2[si]
@@ -181,7 +185,7 @@ def _insertions(ulo, uhi, u_is_poly, snap_tol):
     # (b) proper crossings (interior point of both segments), at least one a polygon boundary
     pairs = tree.query(segs, predicate="crosses")
     i, j = pairs[0], pairs[1]
-    keep = (i < j) & (u_is_poly[i] | u_is_poly[j])
+    keep = (i < j) & ((u_is_poly[i] | u_is_poly[j]) if not line_crossings else True)
     i, j = i[keep], j[keep]
     if len(i):
         p, r = ulo[i], d[i]
@@ -215,7 +219,7 @@ def _insertions(ulo, uhi, u_is_poly, snap_tol):
 
 
 def densify_paths(coords, path_id, spacing_m, path_is_poly, geographic=False,
-                  node_crossings=True, snap_tol=None):
+                  node_crossings=True, snap_tol=None, line_crossings=False):
     """
     Densify a stream of paths.  ``coords`` (n, 2), ``path_id`` (n,) non-decreasing,
     ``path_is_poly`` (number of paths,) bool.  Returns (new coords, new path ids, stats).
@@ -240,7 +244,7 @@ def densify_paths(coords, path_id, spacing_m, path_is_poly, geographic=False,
 
     # nodes to add inside unique segments
     if node_crossings:
-        ins_seg, ins_t, ins_x, ins_y = _insertions(ulo, uhi, u_is_poly, snap_tol)
+        ins_seg, ins_t, ins_x, ins_y = _insertions(ulo, uhi, u_is_poly, snap_tol, line_crossings)
     else:
         ins_seg = np.zeros(0, dtype=np.int64); ins_x = ins_y = np.zeros(0)
     m_u = np.bincount(ins_seg, minlength=U)                   # added nodes per segment
@@ -295,6 +299,15 @@ def densify_paths(coords, path_id, spacing_m, path_is_poly, geographic=False,
 # PUBLIC INTERFACE
 # =============================================================================
 
+def check_same_crs(layers):
+    """Fix Map and Densify compare coordinates between layers, so the layers must share a coordinate system."""
+    crs = [g.crs for g in layers if g is not None and g.crs is not None]
+    if len(crs) > 1 and any(not c.equals(crs[0]) for c in crs[1:]):
+        names = ", ".join(c.to_string() for c in crs)
+        raise ValueError("The polygon and fault layers are in different coordinate systems (" + names + "). "
+                         "Reproject one of them so that both use the same coordinate system, then run again.")
+
+
 def densify_layers(layers, spacing_m, geographic=None, node_crossings=True, snap_tol=None):
     """
     Densify polygon and line layers together so that the new nodes are shared.
@@ -321,6 +334,7 @@ def densify_layers(layers, spacing_m, geographic=None, node_crossings=True, snap
     if spacing_m is None or spacing_m <= 0:
         raise ValueError("The node spacing must be a positive number of metres.")
     layers = [g for g in layers if g is not None]
+    check_same_crs(layers)
     if geographic is None:
         geographic = any(g.crs is not None and g.crs.is_geographic for g in layers)
     infos = [_layer_paths(g) for g in layers]

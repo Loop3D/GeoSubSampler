@@ -9,7 +9,8 @@ GeoSubSampler is designed to help geologists and GIS professionals manage large 
 - Geological polygons (rock units, formations)
 - Fault and contact lines
 
-Beyond subsampling it can also add shared nodes to a polygon and fault map (**Densify Nodes**), read the
+Beyond subsampling it can also clean a polygon and fault map so that it is topologically consistent (**Fix Map**),
+add shared nodes to it (**Densify Nodes**), read the
 stratigraphic offset across faults, simplify a map while preserving its topology, and rescale a whole map
 following the Töpfer & Pillewizer rule.
 
@@ -26,6 +27,13 @@ following the Töpfer & Pillewizer rule.
 6. The plugin will appear as a dockable widget in QGIS
 
 ## ArcGIS Pro version
+
+### Where the results go
+Every time you press a button, the results (shapefiles, reports, progress files) are written to a **new folder named
+after the tool and the time**, e.g. `Fix_map_20261105_164049`, next to the input layer (or in the project / temp
+folder if that is not writable). A series (Rescale Map, Töpfer & Pillewizer scaling) puts all its steps in one
+folder; the next button press starts a new one, so earlier results are never overwritten or mixed up. In QGIS the
+new layers are added to a layer-panel group called **Outputs** (created if it does not exist), newest on top.
 
 An ArcGIS Pro equivalent of the plugin is in the [ARCGIS](ARCGIS/) folder. It is a Python toolbox
 (`ARCGIS/GeoSubSampler.pyt`) whose **Launch GeoSubSampler GUI** tool opens a Tkinter window with the same
@@ -241,6 +249,49 @@ Define the hierarchy for polygon merging decisions:
 - **Area Tolerance (m2)**: Area threshold for exterior vertices
   - *Description*:  Decimates map polygons and associated faults composed of line segments to a similar curves with fewer vertices. Vertices to be removed are those whose triangular area (area defined by the vertex and its two neighbours) exceeds the threshold. When a polygon vertex is to be removed that coincides with a fault vertex, the two will be removed together to maintain their topological relationships.
 
+#### Fix Map
+*A full explanation of the process, step by step, is in [How Fix Map works](docs/FixMap.md).*
+
+Cleans up the small digitising errors that stop a geological map from being topologically perfect, within a
+**Tolerance (m)** (degrees are converted approximately). Nothing moves by more than the tolerance in one pass.
+It handles, in order:
+
+1. invalid polygons are repaired (`buffer(0)`; also available on its own as **Repair (buffer 0)**);
+2. exact duplicate polygons and faults are removed (the first is kept);
+3. a polygon lying (at least 90% of its area) inside a larger polygon gets cut out of it as a hole;
+4. small gaps and overlaps between polygons are closed, nodes missing on one side of a shared boundary are added,
+   near-coincident nodes at triple junctions become one node, and faults that run almost along a contact or
+   another fault are snapped onto it and share its nodes. Bigger polygons are never moved by smaller ones, and
+   polygons are never moved by faults (longer faults win over shorter ones);
+5. nodes are added where polygon boundaries and faults cross, so crossing features share a node (this is what
+   Fault Graph needs to connect faults).
+
+- **Remaining overlaps**: overlaps left at the end (of any width, e.g. two polygons that partly
+  cover each other) are cut out of one of the two polygons, so that no polygons overlap any more. *Keep smaller
+  polygon* (default) cuts the overlap out of the bigger polygon, as for a polygon inside another; *Keep larger
+  polygon* cuts it out of the smaller one; *Leave overlaps* does nothing. A polygon that is entirely overlapped
+  disappears (listed in the report).
+- **Fill enclosed gaps** (on by default): every gap completely surrounded by polygons, whatever its width or
+  size, is added to the neighbouring polygon that shares the longest boundary with it. This is done first, before
+  anything is snapped (the filled polygon takes over its neighbours' own vertices along the gap), and again at the
+  end for any gap made since. Gaps along the edge of the map are not touched. Untick it to keep wide unmapped
+  areas (e.g. lakes) as holes.
+
+No vertex is moved by more than the tolerance (the report gives the largest move). Two vertices that snapped onto
+the same nodes can leave a straight chord where the original line had a short detour, so a new line can lie
+further than the tolerance from the original at a few places; the report gives that distance too.
+
+A polygon that lies on top of a bigger one has a hole cut in the bigger one. If smaller polygons completely
+cover a bigger one, nothing is left of it and it is removed; the report lists these.
+
+With *Fill enclosed gaps* and *Remaining overlaps* on, no enclosed gap or overlap is left, whatever its width;
+with them off, gaps and overlaps wider than the tolerance remain. A text
+report (before -> after counts of unmatched nodes, near-duplicate nodes, invalid polygons, duplicates, polygons
+inside polygons, gaps and overlap area, plus the index of every removed feature) is shown, logged and saved as
+`<layer>_fixed_<tol>_report.txt`, in the run folder with the output layers (named `<layer>_fixed_<tol>`).
+Checked on a 1,900-polygon / 4,430-fault map (670,000 / 350,000 vertices, about 3 minutes): GEOS had to add 6,727
+nodes to node the original linework and none to node the result.
+
 #### Densify Nodes
 Inserts nodes so that no segment is longer than a chosen spacing, **keeping polygons and faults topologically
 consistent**: a new node on a boundary shared by two polygons, or run along by a fault, is the same node in
@@ -251,7 +302,7 @@ the two directions in which a shared edge is traversed leave the two copies with
   than this, so new nodes are between half the spacing and the spacing apart. Shapes do not change. For
   geographic coordinates the distance is converted from degrees approximately (111 km per degree of latitude,
   scaled by cos(latitude) for longitude).
-- **Shared nodes at crossings**: also adds a node, shared by both features, where a fault or polygon boundary
+- **Shared node at fault crossing**: also adds a node, shared by both features, where a fault or polygon boundary
   crosses a polygon boundary, and where a vertex lies on another feature's segment (a T-junction).
 - Vertices closer together than 1 micrometre are merged first: nodes that are "shared" in a file are often
   only shared to within rounding noise, which would otherwise leave the two sides with different nodes.
@@ -350,6 +401,9 @@ Email: mark.jessell@uwa.edu.au@gmail.com
   (~2x), Merge Segments (~7x), Fault Graph, Cluster faults. Results are identical to the previous version except
   where noted below. The heavier libraries (matplotlib, scikit-learn, networkx, fiona) load only when first
   needed, so the plugin starts faster.
+- *New:* **Fix Map** (QGIS and ArcGIS Pro) - repairs invalid polygons, removes doubled polygons and faults, cuts holes
+  for polygons inside polygons, closes small gaps/overlaps, matches nodes along shared boundaries and at triple
+  junctions, snaps faults onto nearby contacts, and writes a text report.
 - *New:* **Densify Nodes** (QGIS and ArcGIS Pro) - shared new nodes along polygon and fault boundaries.
 - *Changed:* **Fault Strat Offset** samples every fault/contact crossing instead of only the start, middle and
   end of each fault, and saves the sample points and extra per-fault columns (see above). **Cluster faults**

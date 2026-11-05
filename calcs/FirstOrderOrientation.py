@@ -1148,6 +1148,74 @@ def dip_field_problem(values, dip_col='dip'):
             f"fields swapped?")
 
 
+def clean_orientations(gdf, dip_col, dipdir_col, swapped_fraction=0.3):
+    """
+    Separate the measurements that cannot be used: missing or non-numeric values, dip outside 0-90, and
+    dip direction / strike outside 0-360 (this includes no-data codes such as 9999).
+
+    Returns ``(clean_gdf, info, problem)``.  ``problem`` is a message (and ``clean_gdf`` is None) when so many
+    dips are outside 0-90 that the Dip and Dip Direction/Strike fields have probably been swapped, in which
+    case nothing should be processed.  Otherwise ``info`` describes what was ignored, or is None if nothing was.
+    """
+    dip = pd.to_numeric(gdf[dip_col], errors='coerce')
+    dd = pd.to_numeric(gdf[dipdir_col], errors='coerce')
+    dip_missing = dip.isna()
+    dd_missing = dd.isna()
+    dip_range = (dip < 0) | (dip > 90)
+    dd_range = (dd < 0) | (dd > 360)
+    n_valid_dip = int((~dip_missing).sum())
+    if n_valid_dip and dip_range.sum() / n_valid_dip > swapped_fraction:
+        return None, None, dip_field_problem(gdf[dip_col], dip_col)
+    bad = dip_missing | dd_missing | dip_range | dd_range
+    if not bad.any():
+        return gdf, None, None
+    reasons = []
+    for flag, text in ((dip_missing, f"{dip_col} missing or not a number"),
+                       (dip_range, f"{dip_col} outside 0-90"),
+                       (dd_missing, f"{dipdir_col} missing or not a number"),
+                       (dd_range, f"{dipdir_col} outside 0-360")):
+        if flag.any():
+            reasons.append((text, int(flag.sum())))
+    rows = []
+    for idx in gdf.index[bad][:500]:
+        why = [text for flag, text in ((dip_missing, "dip missing"), (dip_range, "dip outside 0-90"),
+                                       (dd_missing, "dip dir/strike missing"), (dd_range, "dip dir/strike outside 0-360"))
+               if bool(flag.loc[idx])]
+        rows.append((idx, gdf.loc[idx, dip_col], gdf.loc[idx, dipdir_col], "; ".join(why)))
+    codes = {}
+    for col, flag in ((dip_col, dip_range), (dipdir_col, dd_range)):
+        vals = (dip if col == dip_col else dd)[flag]
+        top = vals.value_counts().head(5)
+        if len(top):
+            codes[col] = [(float(v), int(n)) for v, n in top.items()]
+    info = {"n_total": int(len(gdf)), "n_ignored": int(bad.sum()), "reasons": reasons, "rows": rows,
+            "common_values": codes, "dip_col": dip_col, "dipdir_col": dipdir_col}
+    return gdf[~bad].copy(), info, None
+
+
+def format_invalid_report(info, source=""):
+    """Text report of the measurements ignored by ``clean_orientations``."""
+    lines = ["IGNORED MEASUREMENTS", "=" * 60]
+    if source:
+        lines.append(f"Input: {source}")
+    lines.append(f"{info['n_ignored']} of {info['n_total']} measurements were ignored because their values cannot be used")
+    lines.append(f"(dip must be 0-90, dip direction / strike 0-360, neither may be missing); "
+                 f"{info['n_total'] - info['n_ignored']} were kept.")
+    lines.append("")
+    lines.append("Reasons (a measurement can have more than one):")
+    for text, n in info["reasons"]:
+        lines.append(f"  {n:6d}  {text}")
+    for col, vals in info["common_values"].items():
+        lines.append(f"Most common out-of-range values in {col}: " + ", ".join(f"{v:g} (x{n})" for v, n in vals))
+    lines.append("")
+    lines.append(f"{'feature index':>14s}  {info['dip_col']:>10s}  {info['dipdir_col']:>12s}  reason")
+    for idx, dip, dd, why in info["rows"]:
+        lines.append(f"{str(idx):>14s}  {str(dip):>10s}  {str(dd):>12s}  {why}")
+    if info["n_ignored"] > len(info["rows"]):
+        lines.append(f"... and {info['n_ignored'] - len(info['rows'])} more")
+    return "\n".join(lines)
+
+
 def strike_to_dipdir(gpdataframe, strike):
     """
     Convert a strike column to dip-direction (right-hand rule).

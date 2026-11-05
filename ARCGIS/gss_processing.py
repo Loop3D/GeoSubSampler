@@ -23,6 +23,7 @@ import re
 import shutil
 import tempfile
 import time
+import unicodedata
 
 import numpy as np
 import pandas as pd
@@ -34,7 +35,8 @@ from calcs.FaultLengths import FaultLengths
 from calcs.FaultStratOffset import FaultStratOffset
 from calcs.FaultClusterOrientation import FaultsOrientations
 from calcs.FirstOrderOrientation import (SubsamplingEngine, save_grid_to_shapefile,
-                                         dip_field_problem)
+                                         dip_field_problem, clean_orientations,
+                                         format_invalid_report)
 from calcs.TopferPillewizer import (dipdir_to_strike, topfer_count, scale_iterations,
                                     scale_points_tp, scale_lines_tp, scale_polygons_tp)
 
@@ -92,7 +94,9 @@ class GSSProcessor:
     for every result file that should be added to the map.
     """
 
-    def __init__(self, log=print, add_output=None, fallback_dir=None):
+    def __init__(self, log=print, add_output=None, fallback_dir=None, run_label=""):
+        self._run_dir = None         # the folder of this run (see _run_directory)
+        self._run_label = run_label
         self._log = log
         self._add_output = add_output or (lambda path, like: None)
         self._fallback = fallback_dir
@@ -192,12 +196,50 @@ class GSSProcessor:
             return field_map[field_name]
         return field_name
 
+    def _clean_points(self, gdf, dip_col, dipdir_col, rec):
+        """Ignore measurements with unusable values and write a report of what was ignored."""
+        clean, info, problem = clean_orientations(gdf, dip_col, dipdir_col)
+        if problem:
+            raise GSSError(problem + " Nothing was processed.")
+        if info:
+            report = format_invalid_report(info, self.resolved_source(rec))
+            path = os.path.splitext(self._make_output_path(rec, "_ignored_points"))[0] + "_report.txt"
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(report)
+            self.warn(f"{info['n_ignored']} of {info['n_total']} points have unusable dip / dip direction values "
+                      f"and were ignored. Report: {path}")
+        return clean
+
     def _output_directory(self, rec):
         folder = os.path.dirname(self.resolved_source(rec))
         return folder if self._dir_writable(folder) else self._fallback_dir()
 
+    def _run_directory(self, rec):
+        """
+        The folder for everything one button press writes: <tool>_<YYYYMMDD_HHMMSS>, created next to the layer (or in
+        the fallback folder) by the first output. A series (Rescale Map, T&P scaling) or a result with its report and
+        extra files all share it; the next press gets a new folder (the window makes a new processor for each press).
+        """
+        if self._run_dir is None or not os.path.isdir(self._run_dir):
+            base = self._output_directory(rec)
+            tag = unicodedata.normalize("NFKD", self._run_label or "run").encode("ascii", "ignore").decode()
+            tag = re.sub(r"[^A-Za-z0-9]+", "_", tag).strip("_") or "run"
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(base, f"{tag}_{stamp}")
+            n = 1
+            while os.path.exists(path):
+                n += 1
+                path = os.path.join(base, f"{tag}_{stamp}_{n}")
+            try:
+                os.makedirs(path)
+            except OSError as exc:
+                self.warn(f"Could not create the output folder {path}: {exc}. Using {base} instead.")
+                path = base
+            self._run_dir = path
+        return self._run_dir
+
     def _make_output_path(self, rec, suffix):
-        base = os.path.join(self._output_directory(rec),
+        base = os.path.join(self._run_directory(rec),
                             safe_filename(rec["name"]) + safe_filename(suffix))
         path = base + ".shp"
         if os.path.exists(path):
@@ -246,9 +288,7 @@ class GSSProcessor:
         if missing:
             raise GSSError(f"field(s) {missing} not found. Available columns: {list(gdf.columns)}")
         if fields_selected:
-            problem = dip_field_problem(gdf[dip_col], dip_col)
-            if problem:
-                raise GSSError(problem + " Nothing was processed.")
+            gdf = self._clean_points(gdf, dipdir_col=dipdir_col, dip_col=dip_col, rec=rec)
 
         gdf = gdf.copy()
         gdf['EASTING'] = gdf.geometry.x
@@ -272,7 +312,7 @@ class GSSProcessor:
         """Write a point result next to its source and queue it for the map."""
         suffix = "" if param == 0 else "_" + str(int(param))
         stem = safe_filename(rec["name"]) + "_" + safe_filename(name) + suffix
-        folder = self._output_directory(rec)
+        folder = self._run_directory(rec)
         new_path = os.path.join(folder, stem + ".shp")
         if os.path.exists(new_path):
             new_path = os.path.join(folder, f"{stem}_{random.randint(10000, 99999)}.shp")  # nosec B311 - random numbers for sampling/colours, not for security
@@ -459,9 +499,7 @@ class GSSProcessor:
         orient = gpd.read_file(self.resolved_source(point_rec))
         dip_col = self.resolved_field(point_rec, dip)
         dipdir_col = self.resolved_field(point_rec, dipdir)
-        problem = dip_field_problem(orient[dip_col], dip_col)
-        if problem:
-            raise GSSError(problem + " Nothing was processed.")
+        orient = self._clean_points(orient, dip_col, dipdir_col, point_rec)
         eff = dipdir_col
         if not is_dipdir:
             orient['_eff_dipdir'] = (orient[dipdir_col].astype(float) - 90) % 360
@@ -552,8 +590,10 @@ class GSSProcessor:
         area_tolerance = int(area_tolerance)
         input_file = self.resolved_source(poly_rec)
         fault_file = self.resolved_source(fault_rec)
-        output_file = input_file.replace(".shp", f"_MVW_{area_tolerance}.shp")
-        fault_out = fault_file.replace(".shp", f"_sn_si_{area_tolerance}.shp")
+        output_file = self._make_output_path(poly_rec, f"_MVW_{area_tolerance}")
+        # the faults are written beside the polygon output, as <fault name>_sn_si_<tolerance>.shp
+        fault_out = os.path.join(os.path.dirname(output_file),
+                                 os.path.splitext(os.path.basename(fault_file))[0] + f"_sn_si_{area_tolerance}.shp")
         vector_simplify_file_two_stage(
             input_file=input_file, output_file=output_file,
             method="modified_visvalingam_whyatt", threshold=area_tolerance,
@@ -561,19 +601,91 @@ class GSSProcessor:
         self._emit(output_file, poly_rec)
         self._emit(fault_out, fault_rec)
 
+    def fix_map(self, poly_rec, fault_rec, tol_m, fill_gaps=True, overlap_rule="smaller"):
+        """
+        Make the polygon and fault layers topologically consistent within ``tol_m`` metres (repair,
+        duplicates, polygons inside polygons, gaps/overlaps, shared nodes, faults onto contacts).
+        A text report is written next to the output and logged.
+        """
+        from calcs.FixMap import fix_map
+        from calcs.Densify import check_same_crs
+        recs = [r for r in (poly_rec, fault_rec) if r is not None]
+        if not recs:
+            raise GSSError("Fix Map: select a polygon layer and/or a fault layer.")
+        if tol_m <= 0:
+            raise GSSError("Fix Map: the tolerance must be a number of metres above zero.")
+        gdfs = [gpd.read_file(self.resolved_source(r)) for r in recs]
+        try:
+            check_same_crs(gdfs)
+        except ValueError as exc:
+            raise GSSError(f"Fix Map: {exc}")
+        # every progress line is also written, with the clock time, to a text file in the run folder
+        progress_path = os.path.splitext(self._make_output_path(recs[0], f"_fixed_{tol_m:g}"))[0] + "_progress.txt"
+        try:
+            progress_file = open(progress_path, "w", encoding="utf-8")
+        except OSError:
+            progress_file = None
+        t_run = time.time()
+
+        def progress(line):
+            self.log(line)
+            if progress_file is not None:
+                progress_file.write(f"[{time.strftime('%H:%M:%S')}  +{time.time() - t_run:6.0f} s] {line}\n")
+                progress_file.flush()
+
+        try:
+            results, report, stats = fix_map(gdfs, tol_m, geographic=any(r.get("geographic") for r in recs),
+                                             progress=progress,
+                                             sources=[self.resolved_source(r) for r in recs],
+                                             fill_gaps=fill_gaps,
+                                             overlap_rule=overlap_rule)
+        finally:
+            if progress_file is not None:
+                progress_file.close()
+        tag = f"_fixed_{tol_m:g}"
+        first = None
+        outputs = []
+        for rec, gdf in zip(recs, results):
+            out = self._save_gdf(gdf, self._make_output_path(rec, tag))
+            first = first or out
+            outputs.append(out)
+            self._emit(out, rec)
+        report_path = os.path.splitext(first)[0] + "_report.txt"
+        report += "\n\nOUTPUT FILES\n" + "\n".join(f"  {o}" for o in outputs) + f"\n  {report_path}"
+        with open(report_path, "w", encoding="utf-8") as fh:
+            fh.write(report)
+        self.log(f"Fix Map report written to {report_path}")
+
+    def repair_polygons(self, poly_rec):
+        """Repair invalid polygons with buffer(0)."""
+        from calcs.FixMap import repair_polygons
+        if poly_rec is None:
+            raise GSSError("Repair: select a polygon layer.")
+        gdf, info = repair_polygons(gpd.read_file(self.resolved_source(poly_rec)))
+        if not info["invalid"]:
+            self.log("Repair: there are no invalid polygons in this layer.")
+            return
+        self._emit(self._save_gdf(gdf, self._make_output_path(poly_rec, "_valid")), poly_rec)
+        self.log(f"Repaired {info['repaired']} of {info['invalid']} invalid polygons"
+                 + (f"; could not repair {info['failed']}" if info["failed"] else "") + ".")
+
     def densify(self, poly_rec, fault_rec, spacing_m, node_crossings=True):
         """
         Insert nodes so that no segment is longer than ``spacing_m`` metres, keeping the polygon and
         fault layers topologically consistent: a new node on a boundary shared by two polygons, or
         run along by a fault, is the same node in all of them.
         """
-        from calcs.Densify import densify_layers
+        from calcs.Densify import densify_layers, check_same_crs
         recs = [r for r in (poly_rec, fault_rec) if r is not None]
         if not recs:
             raise GSSError("Densify: select a polygon layer and/or a fault layer.")
         if spacing_m <= 0:
             raise GSSError("Densify: the node spacing must be a number of metres above zero.")
         gdfs = [gpd.read_file(self.resolved_source(r)) for r in recs]
+        try:
+            check_same_crs(gdfs)
+        except ValueError as exc:
+            raise GSSError(f"Densify: {exc}")
         results, stats = densify_layers(gdfs, spacing_m,
                                         geographic=any(r.get("geographic") for r in recs),
                                         node_crossings=node_crossings)
@@ -606,7 +718,7 @@ class GSSProcessor:
         src = self.resolved_source(fault_rec)
 
         if method == "length":
-            out = src.replace(".shp", "_length.shp")
+            out = self._make_output_path(fault_rec, "_length")
             FaultLengths().add_polyline_length(
                 src, output_path=out, length_field="line_len",
                 unit="degrees" if fault_rec.get("geographic") else "meters",
@@ -615,9 +727,10 @@ class GSSProcessor:
 
         elif method == "graph":
             from calcs.FaultsGraph import FaultsGraph       # (networkx: loaded when needed)
-            FaultsGraph().CalcFaultsGraph(src)
+            run_dir = self._run_directory(fault_rec)
+            FaultsGraph().CalcFaultsGraph(src, output_dir=run_dir)
             directory, filename = os.path.split(src)
-            self._emit(os.path.join(directory, "simplified_full_" +
+            self._emit(os.path.join(run_dir, "simplified_full_" +
                                     filename.replace(".shp", "_edges.shp")), fault_rec)
 
         elif method == "strat_offset":
@@ -626,7 +739,7 @@ class GSSProcessor:
             cols = [self.resolved_field(poly_rec, f) for f in prio_fields if f]
             if not cols:
                 raise GSSError("Fault Strat Offset: select at least one priority field.")
-            out = src.replace(".shp", "_stratOffset.shp")
+            out = self._make_output_path(fault_rec, "_stratOffset")
             FaultStratOffset().CalcFaultStratOffset(
                 src, self.resolved_source(poly_rec), out, cols, offset_distance=50)
             self._emit(out, fault_rec)
@@ -634,7 +747,7 @@ class GSSProcessor:
             self._emit(out.replace(".shp", "_samples.shp"), None)
 
         elif method == "clusters":
-            out_az = src.replace(".shp", "_endpt_az.shp")
+            out_az = self._make_output_path(fault_rec, "_endpt_az")
             fo = FaultsOrientations()
             fo.add_endpoint_azimuth(src, out_az, azimuth_field="endpt_az")
             safe_name = safe_filename(fault_rec["name"])
@@ -878,7 +991,7 @@ class GSSProcessor:
                         'parameters used': '; '.join(f"{k}={v}" for k, v in settings.items())})
         try:
             ref = next(r for r in (point_rec, fault_rec, poly_rec) if r is not None)
-            report = os.path.join(self._output_directory(ref),
+            report = os.path.join(self._run_directory(ref),
                                   f"TP_scaling_report_{time.strftime('%Y%m%d_%H%M%S')}.csv")
             with open(report, 'w', newline='', encoding='utf-8-sig') as fh:
                 w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
