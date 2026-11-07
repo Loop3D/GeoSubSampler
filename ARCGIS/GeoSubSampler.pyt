@@ -107,9 +107,90 @@ def _add_to_map(proj, entries, messages):
                 except Exception as exc:
                     messages.addWarningMessage(
                         f"Could not copy symbology to {os.path.basename(path)}: {exc}")
+            try:
+                _move_into_group(m, new_layer, entry.get("group") or {"kind": "outputs"})
+            except Exception as exc:
+                messages.addWarningMessage(f"Could not put {os.path.basename(path)} in its group: {exc}")
         except Exception as exc:
             messages.addWarningMessage(f"Could not add {path}: {exc}")
     return added
+
+
+# ------------------------------------------------------------------ layer groups (as in the QGIS plugin)
+OUTPUTS_GROUP = "Outputs"
+TP_GROUP = "T&P"
+
+
+def _children(m, parent):
+    """The layers directly inside group layer `parent` (or at the top of map m when parent is None), in order."""
+    prefix = parent.longName + "\\" if parent is not None else ""
+    pool = parent.listLayers() if parent is not None else m.listLayers()
+    return [l for l in pool if l.longName.startswith(prefix) and "\\" not in l.longName[len(prefix):]]
+
+
+def _group(m, name, parent=None):
+    """The group layer `name` directly inside `parent` (top level when None), created if missing:
+    a new top-level group goes at the top of the map, a new group in a group at the top of that group."""
+    for l in _children(m, parent):
+        if l.isGroupLayer and l.name == name:
+            return l
+    new_name = (m.createGroupLayer(name, parent) if parent is not None else m.createGroupLayer(name)).longName
+    kids = _children(m, parent)
+    if kids and kids[0].longName != new_name:
+        m.moveLayer(kids[0], next(l for l in kids if l.longName == new_name), "BEFORE")
+    return next(l for l in _children(m, parent) if l.isGroupLayer and l.name == name)
+
+
+def _make_exclusive(group):
+    """Only one sublayer of the group can be visible at a time (ArcGIS Pro 3.x group layer setting)."""
+    defn = group.getDefinition("V3")
+    try:
+        from arcpy.cim.CIMEnum import SublayerVisibilityMode
+        mode = SublayerVisibilityMode.Exclusive
+    except Exception:
+        mode = "Exclusive"
+    if str(getattr(defn, "sublayerVisibilityMode", "")).endswith("Exclusive"):
+        return
+    defn.sublayerVisibilityMode = mode
+    group.setDefinition(defn)
+
+
+def _move_into_group(m, layer, group_info):
+    """
+    Put a layer just added at the top of map m into its group:
+    - Outputs: a group at the top of the map, newest result on top;
+    - T&P: a group at the top of the map in which only one step shows at a time, holding one group per step
+      ("Ratio 0.5 (12:00:00)") with that step's points, faults and polygons in the order they were written (so
+      points draw on top). A run's steps are in order, above those of earlier runs; the newest step is shown, so
+      at the end of a run the target scale is shown.
+    """
+    if group_info.get("kind") == "tp":
+        top = _group(m, TP_GROUP)
+        step_name = group_info["name"]
+        existing = [l for l in _children(m, top) if l.isGroupLayer and l.name == step_name]
+        if existing:
+            target = existing[0]
+        else:
+            # where it goes: after the earlier steps of this run, which are above the earlier runs. The new group
+            # is created at the top, then this run's earlier steps are moved above it one by one (moveLayer
+            # "AFTER" is not used: in ArcGIS Pro 3.6 it drops a layer moved after the last one of a group)
+            run_tag = f"({group_info.get('run', '')})"
+            same_run = [l.name for l in _children(m, top) if l.isGroupLayer and l.name.endswith(run_tag)]
+            target = _group(m, step_name, top)
+            for name in same_run:
+                kids = {l.name: l for l in _children(m, top)}
+                m.moveLayer(kids[step_name], kids[name], "BEFORE")
+            target = next(l for l in _children(m, top) if l.isGroupLayer and l.name == step_name)
+        m.addLayerToGroup(target, layer, "BOTTOM")
+        m.removeLayer(layer)
+        top = _group(m, TP_GROUP)
+        _make_exclusive(top)
+        for l in _children(m, top):
+            l.visible = (l.name == step_name)
+    else:
+        target = _group(m, OUTPUTS_GROUP)
+        m.addLayerToGroup(target, layer, "TOP")
+        m.removeLayer(layer)
 
 
 class LaunchGUI:

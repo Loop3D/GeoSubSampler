@@ -128,6 +128,7 @@ def _operation(name):
             except Exception:
                 logging.getLogger(__name__).debug("could not record the settings", exc_info=True)
             self._meta_operation = self._run_label or name
+            self._layer_group = None
             self._meta_params = params
             self._meta_sources = sources
             return fn(self, *args, **kwargs)
@@ -152,8 +153,9 @@ def _plugin_version():
 class GSSProcessor:
     """
     All GeoSubSampler operations.  `log(message, level)` receives progress / warning text
-    (level is "info", "warning" or "error"); `add_output(path, like_layer_name)` is called
-    for every result file that should be added to the map.
+    (level is "info", "warning" or "error"); `add_output(path, like_layer_name, group)` is called
+    for every result file that should be added to the map; group is None (the Outputs group) or,
+    for a T&P step, {"kind": "tp", "name": "Ratio 0.5 (12:00:00)", "run": "12:00:00", "step": 2}.
     """
 
     def __init__(self, log=print, add_output=None, fallback_dir=None, run_label=""):
@@ -163,7 +165,8 @@ class GSSProcessor:
         self._meta_sources = []
         self._run_label = run_label
         self._log = log
-        self._add_output = add_output or (lambda path, like: None)
+        self._add_output = add_output or (lambda path, like, group=None: None)
+        self._layer_group = None     # where the next result goes in the map (see add_output)
         self._fallback = fallback_dir
         self._field_maps = {}        # resolved shp path -> {original column: shapefile column}
         self._writable = {}
@@ -344,7 +347,7 @@ class GSSProcessor:
             if like_rec is not None and not sources:
                 sources = [self.resolved_source(like_rec)]
             write_sgt_metadata(path, sources or None, self._meta_operation, self._meta_params, _plugin_version())
-        self._add_output(path, like_rec["name"] if like_rec else None)
+        self._add_output(path, like_rec["name"] if like_rec else None, self._layer_group)
 
     # ------------------------------------------------------------------ points
     def _setup_points(self, rec, dip_col, dipdir_col, is_dipdir, check_fields=True):
@@ -981,6 +984,11 @@ class GSSProcessor:
                 'polygons': len(cur_poly) if cur_poly is not None else None}
         exponent = {'points': 1, 'faults': 2, 'polygons': 3}
         run_params = self._meta_params
+        run_time = time.strftime('%H:%M:%S')
+
+        def step_group(step, r):
+            # one map group per step, holding its points, faults and polygons (saved in that order)
+            self._layer_group = {"kind": "tp", "name": f"Ratio {r:g} ({run_time})", "run": run_time, "step": step}
 
         def add_report(step, r, step_r, layer, method, n_in, n_out, info):
             # called just before each result is saved: its metadata gets this step's values, as the
@@ -997,6 +1005,7 @@ class GSSProcessor:
                     for k, v in info.items() if k != 'method')})
 
         # ratio = 1 baseline
+        step_group(1, 1.0)
         if original_pt is not None:
             add_report('baseline', 1.0, 1.0, 'points', 'none (all kept)',
                        len(original_pt), len(original_pt), {})
@@ -1022,6 +1031,7 @@ class GSSProcessor:
             if abs(ir - 1.0) < 1e-9:
                 continue
             step_no += 1
+            step_group(step_no, ir)
             self.log(f"T&P ratio {tag} ...")
 
             if original_pt is not None:
@@ -1074,6 +1084,7 @@ class GSSProcessor:
                 self._emit(self._save_gdf(
                     scaled, self._make_output_path(poly_rec, f"_tp_{step_no}")), poly_rec)
 
+        self._layer_group = None
         settings = {
             'target OS/TS ratio': ratio, 'increment': increment,
             'points layer': point_rec["name"] if original_pt is not None else 'none',

@@ -2494,7 +2494,7 @@ class GeoSubSampler:
         self.dockwidget.radioButton_fault_strat_offset.setToolTip(
             "Add stratigraphic offset data to faults\n"
             "Requires both fault and map polygon layers\n"
-            "as well as Geology Map Priority Codes (see below) to be defined\n"
+            "as well as Geology Polygon Priorities (at the top) to be defined\n"
             "The units either side of the fault are read at every point where the fault crosses a\n"
             "geological contact (start/middle/end for faults that meet none). Adds the maximum\n"
             "offset level, how many samples were used (n_samples) and how many showed an offset\n"

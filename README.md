@@ -75,7 +75,8 @@ The QGIS dock has four tabs, in the order a map is usually worked through:
 | [Faults](#faults-tab) | Merge Segments, fault length, graph, stratigraphic offset and orientation clusters |
 | [Polygons](#polygons-tab) | Rescale Map, Simplify Map, Töpfer & Pillewizer scaling |
 
-The ArcGIS Pro window has the same tools and settings, in one window rather than tabs.
+The ArcGIS Pro window has the same tabs, tools and settings. Its metadata button, **Show Metadata...**, is next to
+**Refresh from map**.
 
 ### Always visible
 
@@ -354,7 +355,8 @@ after the tool and the time**, e.g. `Fix_map_20261105_164049`, next to the input
 folder if that is not writable). A series (Rescale Map, Töpfer & Pillewizer scaling) puts all its steps in one
 folder; the next button press starts a new one, so earlier results are never overwritten or mixed up. In QGIS the
 new layers are added to a layer-panel group called **Outputs** (created if it does not exist), newest on top;
-Töpfer & Pillewizer results have [their own group](#töpfer--pillewizer-scaling).
+Töpfer & Pillewizer results have [their own group](#töpfer--pillewizer-scaling). ArcGIS Pro does the same in the map's
+Contents pane.
 
 ### Output names
 File names give the tool, not its settings, which are in the metadata. `<layer>` is the name of the input layer.
@@ -385,8 +387,9 @@ Every shapefile a tool writes gets a metadata file beside it, `<file>.shp.sgt.xm
 
 To read it, select the layer in the Layers panel and press **Show metadata of the selected layer in the layer panel**.
 The window has a **History** tab and an **XML** tab. SGTool can show GeoSubSampler's metadata, and this button shows
-SGTool's. The metadata is written by the QGIS and ArcGIS Pro versions alike, but the button is in QGIS only. Layers
-made before version 0.5.1, and layers made by other software, have no metadata to show.
+SGTool's. In ArcGIS Pro, press **Show Metadata...** and choose the layer (it starts with the newest result), or
+**Browse...** for a shapefile. Layers made before version 0.5.1, and layers made by other software, have no metadata to
+show.
 
 ## Technical Notes
 
@@ -473,6 +476,8 @@ Email: mark.jessell@uwa.edu.au
 - The dock is split into Clean, Points, Faults and Polygons tabs. The layer selectors, the metadata button and the five
   priority fields stay at the top, under the tabs, and keep their values between tabs.
 - **Show metadata** button: shows the history of the layer selected in the layer panel.
+- ArcGIS Pro: the window has the same tabs and always-visible section as QGIS, a **Show Metadata...** button, and puts
+  results in an Outputs group and T&P results in a T&P group (one step shown at a time) in the map.
 - Fix Map: a final overlap sweep removes the small overlaps the last rounds can open; long folder paths no longer stop a run.
 
 **0.5**

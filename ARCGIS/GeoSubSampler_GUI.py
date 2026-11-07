@@ -120,6 +120,7 @@ class App(tk.Tk):
         self.queue = queue.Queue()
         self.busy = False
         self.local_layers = []          # "Add file..." / result layers, kept across map refreshes
+        self._last_result = None        # display name of the newest result, offered by the metadata viewer
 
         self._load_info()
         self._build()
@@ -209,14 +210,20 @@ class App(tk.Tk):
             None if isinstance(e.widget, tk.Text)
             else canvas.yview_scroll(int(-e.delta / 120), "units")))
 
+        # always visible: the layers, the metadata button and the polygon priorities (kept between tabs),
+        # then one tab per kind of data, as in the QGIS plugin
         self._build_layers(body)
-        self._build_fixmap(body)
-        self._build_densify(body)
-        self._build_orientation(body)
-        self._build_faults(body)
-        self._build_geology(body)
-        self._build_simplify(body)
-        self._build_tp(body)
+        self._build_priorities(body)
+        self.tabs = ttk.Notebook(body)
+        self.tabs.pack(fill="x", padx=6, pady=(4, 2))
+        for title, builders in (("Clean", (self._build_fixmap, self._build_densify)),
+                                ("Points", (self._build_orientation,)),
+                                ("Faults", (self._build_faults,)),
+                                ("Polygons", (self._build_geology, self._build_simplify, self._build_tp))):
+            page = tk.Frame(self.tabs, bg=BG)
+            self.tabs.add(page, text=title)
+            for build in builders:
+                build(page)
         self._define_tips()
 
         # log
@@ -245,8 +252,12 @@ class App(tk.Tk):
             tk.Button(f, text="Add file...", font=FONT, command=lambda k=kind: self._add_file(k)
                       ).grid(row=row, column=2, padx=2)
             self.cb[kind] = cb
-        tk.Button(f, text="Refresh from map", font=FONT, command=self._request_refresh
-                  ).grid(row=3, column=1, sticky="w", padx=2, pady=2)
+        r = tk.Frame(f, bg=BG)
+        r.grid(row=3, column=1, columnspan=2, sticky="we", pady=2)
+        tk.Button(r, text="Refresh from map", font=FONT, command=self._request_refresh
+                  ).pack(side="left", padx=2)
+        tk.Button(r, text="Show Metadata...", font=FONT, command=self._show_metadata
+                  ).pack(side="right", padx=2)
         f.columnconfigure(1, weight=1)
         self.v_points.trace_add("write", lambda *_: self._update_point_fields())
         self.v_polys.trace_add("write", lambda *_: self._update_poly_fields())
@@ -340,32 +351,37 @@ class App(tk.Tk):
                 ("Strat Offset then Length  [requires Geology Polygon Priorities]", "strat_offset",
                  "Needs both fault and polygon layers and the priority fields below"),
                 ("Orientation Clusters then Length", "clusters",
-                 "Add suite of orientation cluster data to faults (2-7 clusters)")):
+                 "Add orientation cluster data to faults (the best of 2-30 clusters)")):
             tip(tk.Radiobutton(f, text=text, variable=self.v_fault_method, value=value, bg=BG,
                                font=FONT, anchor="w"), tp).pack(fill="x")
         tk.Button(f, text="Process Faults", font=FONT_BOLD, width=20,
                   command=lambda: self._run("Fault processing", self._do_faults)
                   ).pack(anchor="e", pady=4)
 
-    def _build_geology(self, p):
-        f = section(p, "Geology Polygons")
+    def _build_priorities(self, p):
+        """The five polygon priority fields: used by Rescale Map, Strat Offset and T&P, so shown above the tabs."""
+        f = section(p, "Geology Polygon Priorities")
         f.pack(fill="x", padx=6, pady=4)
         self.v_prio = [tk.StringVar() for _ in range(5)]
-        self.v_ignore_field = tk.StringVar()
         self.cb_prio = []
-        grid = tk.Frame(f, bg=BG)
-        grid.pack(fill="x")
         names = ["Priority 1", "Priority 2", "Priority 3", "Priority 4", "Priority 5 (litho)"]
         for i, (nm, var) in enumerate(zip(names, self.v_prio)):
-            label(grid, nm).grid(row=i // 3, column=(i % 3) * 2, sticky="e", padx=2, pady=1)
-            cb = ttk.Combobox(grid, textvariable=var, state="readonly", width=14, font=FONT)
+            label(f, nm).grid(row=i // 3, column=(i % 3) * 2, sticky="e", padx=2, pady=1)
+            cb = ttk.Combobox(f, textvariable=var, state="readonly", width=14, font=FONT)
             cb.grid(row=i // 3, column=(i % 3) * 2 + 1, padx=2)
             tip(cb, f"Field for priority {i + 1} of polygon merging and fault strat offset")
             self.cb_prio.append(cb)
-        label(grid, "Ignore Field").grid(row=1, column=4, sticky="e", padx=2)
-        self.cb_ignore = ttk.Combobox(grid, textvariable=self.v_ignore_field, state="readonly",
+
+    def _build_geology(self, p):
+        f = section(p, "Geology Polygons")
+        f.pack(fill="x", padx=6, pady=4)
+        self.v_ignore_field = tk.StringVar()
+        r = tk.Frame(f, bg=BG)
+        r.pack(fill="x")
+        label(r, "Ignore Field").pack(side="left")
+        self.cb_ignore = ttk.Combobox(r, textvariable=self.v_ignore_field, state="readonly",
                                       width=14, font=FONT)
-        self.cb_ignore.grid(row=1, column=5, padx=2)
+        self.cb_ignore.pack(side="left", padx=4)
 
         r = tk.Frame(f, bg=BG)
         r.pack(fill="x", pady=2)
@@ -456,8 +472,8 @@ class App(tk.Tk):
         self.v_ratio.trace_add("write", lambda *_: self._update_steps())
         self.v_incr.trace_add("write", lambda *_: self._update_steps())
         self._update_steps()
-        label(f, "Uses the orientation method, fault method and polygon settings chosen above; "
-                 "any layer left as (none) is skipped.").pack(anchor="w")
+        label(f, "Uses the methods selected on the Points and Faults tabs and the polygon settings above; "
+                 "any layer left as (none) is skipped.", wraplength=680, justify="left").pack(anchor="w")
 
     # ------------------------------------------------------------------ tooltips
     def _define_tips(self):
@@ -552,11 +568,11 @@ class App(tk.Tk):
             "Graph then Length": "Add graph data to faults\nDoes not filter data, just adds "
                                  "graph attributes",
             "Orientation Clusters then Length": (
-                "Add suite of orientation cluster data to faults (2-7 clusters)\n"
+                "Add orientation cluster data to faults (the best of 2-30 clusters)\n"
                 "Does not filter data, just adds cluster attributes"),
             "Process Faults": "Run the selected fault attribute method",
             "Run T&P Scaling": ("Apply Töpfer & Pillewizer scaling to all selected layers.\n"
-                                "Uses the orientation and fault methods selected above."),
+                                "Uses the methods selected on the Points and Faults tabs."),
             "Simplify Map": ("Simplify map polygons based on area tolerance, respecting fault "
                              "topology"),
             "Shared node at fault crossing": (
@@ -585,7 +601,7 @@ class App(tk.Tk):
         }
         strat_tip = ("Add stratigraphic offset data to faults\n"
                      "Requires both fault and map polygon layers\n"
-                     "as well as Geology Map Priority Codes (see below) to be defined\n"
+                     "as well as Geology Polygon Priorities (at the top) to be defined\n"
                      "The units either side of the fault are read at every point where the fault crosses a\n"
                      "geological contact (start/middle/end for faults that meet none). Adds the maximum\n"
                      "offset level, how many samples were used (n_samples) and how many showed an offset\n"
@@ -682,7 +698,9 @@ class App(tk.Tk):
     def _log(self, message, level="info"):
         self.queue.put(("log", message, level))
 
-    def _add_output(self, path, like):
+    def _add_output(self, path, like, group=None):
+        """A result was written: offer it in the dropdowns and queue it for the map. group says where it goes in
+        the map: None for the Outputs group, or a T&P step ({"kind": "tp", "name": ...})."""
         # also offer the result in the layer dropdowns
         try:
             import geopandas as gpd
@@ -703,7 +721,7 @@ class App(tk.Tk):
                     pending = json.load(f)
             except Exception:
                 pending = []
-            pending.append({"path": path, "like": like})
+            pending.append({"path": path, "like": like, "group": group or {"kind": "outputs"}})
             with open(PENDING_FILE, "w") as f:
                 json.dump(pending, f)
         except OSError as exc:
@@ -756,6 +774,7 @@ class App(tk.Tk):
                     self._reload_layers()
                 elif kind == "newlayer":                  # a result just written: offer it
                     self.local_layers.append(message)
+                    self._last_result = message["display"]
                     self.layers[message["kind"]].append(message)
                     self._refresh_combos()
                 elif kind == "set":                       # (var, value) from a worker thread
@@ -766,6 +785,74 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         self.after(100, self._drain_queue)
+
+    # ------------------------------------------------------------------ metadata
+    def _show_metadata(self):
+        """Show the history recorded for a layer (made by GeoSubSampler or SGTool), as the QGIS plugin does."""
+        from calcs.gss_metadata import read_sgt_metadata, format_sgt_metadata_text, sgt_metadata_xml_text
+
+        records = {r["display"]: r for kind in ("point", "line", "polygon") for r in self.layers[kind]}
+        win = tk.Toplevel(self)
+        win.title("GeoSubSampler metadata")
+        win.configure(bg=BG)
+        win.geometry("760x640")
+        top = tk.Frame(win, bg=BG)
+        top.pack(fill="x", padx=6, pady=4)
+        label(top, "Layer").pack(side="left")
+        v_layer = tk.StringVar()
+        cb = ttk.Combobox(top, textvariable=v_layer, state="readonly", width=60, font=FONT,
+                          values=list(records))
+        cb.pack(side="left", padx=4, fill="x", expand=True)
+        book = ttk.Notebook(win)
+        book.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        texts = []
+        for title in ("History", "XML"):
+            frame = tk.Frame(book, bg=BG)
+            book.add(frame, text=title)
+            t = tk.Text(frame, font=FONT_MONO if title == "XML" else FONT, wrap="word")
+            sb = ttk.Scrollbar(frame, orient="vertical", command=t.yview)
+            t.configure(yscrollcommand=sb.set)
+            sb.pack(side="right", fill="y")
+            t.pack(fill="both", expand=True)
+            texts.append(t)
+        win._gss_texts = texts                      # for tests
+
+        def show(path, name):
+            root = None
+            if path and os.path.isfile(path):
+                try:
+                    root = read_sgt_metadata(path)
+                except Exception:
+                    root = None
+            history = (format_sgt_metadata_text(root) if root is not None else
+                       f"No metadata found for {name} (it was not made by GeoSubSampler or SGTool).")
+            for t, content in zip(texts, (history, sgt_metadata_xml_text(root) if root is not None else "")):
+                t.configure(state="normal")
+                t.delete("1.0", "end")
+                t.insert("1.0", content)
+                t.configure(state="disabled")
+
+        def on_layer(*_):
+            rec = records.get(v_layer.get())
+            if rec:
+                show(rec["source"], rec["name"])
+
+        def browse():
+            path = filedialog.askopenfilename(parent=win, filetypes=[("Shapefile", "*.shp"), ("All files", "*.*")])
+            if path:
+                v_layer.set("")
+                show(path, os.path.basename(path))
+
+        tk.Button(top, text="Browse...", font=FONT, command=browse).pack(side="left", padx=2)
+        v_layer.trace_add("write", on_layer)
+        # start with the newest result, else the polygon, fault or point layer selected in the main window
+        for name in (self._last_result, self.v_polys.get(), self.v_faults.get(), self.v_points.get()):
+            if name in records:
+                v_layer.set(name)
+                break
+        else:
+            show(None, "the selected layer")
+        return win
 
     # --- one handler per button: prepare=True reads widgets, prepare=False does the work ---
     def _point_args(self):
