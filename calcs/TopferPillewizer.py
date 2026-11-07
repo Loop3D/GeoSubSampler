@@ -23,6 +23,7 @@ import math
 import os
 import tempfile
 import shutil
+import time
 
 import numpy as np
 import pandas as pd
@@ -112,6 +113,12 @@ def _count_grid(engine, method, gdf, min_x, max_x, min_y, max_y, gs):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def _new_seed(info):
+    """A random seed from the clock, noted in info so the result can be reproduced."""
+    info['random_seed'] = int(time.time())
+    return info['random_seed']
+
+
 def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
                     grid_size=5000, firstorder_kwargs=None, info=None,
                     strike_input=False):
@@ -129,7 +136,6 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
     T&P report.
     """
     from .FirstOrderOrientation import save_grid_to_shapefile
-    import time
 
     if info is None:
         info = {}
@@ -163,7 +169,7 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
         tmpdir = tempfile.mkdtemp()
         try:
             result = engine.stochastic(gdf, frac=tn / on,
-                                       random_state=int(time.time()),
+                                       random_state=_new_seed(info),
                                        path_out=tmpdir)
             return result.set_crs(gdf.crs, allow_override=True)
         finally:
@@ -189,7 +195,7 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
         tmpdir = tempfile.mkdtemp()
         try:
             result = engine.stochastic(gdf, frac=max(0.001, tn / on),
-                                       random_state=int(time.time()),
+                                       random_state=_new_seed(info),
                                        path_out=tmpdir)
             return result.set_crs(gdf.crs, allow_override=True)
         finally:
@@ -276,7 +282,7 @@ def scale_points_tp(gdf, ratio, engine, method, dip_col, dipdir_col,
     tmpdir = tempfile.mkdtemp()
     try:
         result = engine.stochastic(gdf, frac=max(0.001, tn / on),
-                                   random_state=int(time.time()),
+                                   random_state=_new_seed(info),
                                    path_out=tmpdir)
         return result.set_crs(gdf.crs, allow_override=True)
     finally:

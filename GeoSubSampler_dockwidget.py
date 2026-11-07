@@ -72,21 +72,38 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         ml.setSpacing(6)
         ml.setContentsMargins(6, 6, 6, 6)
 
+        # The tab bar is separate from the pages so the shared selectors can sit between the
+        # two: they are the same widgets whichever tab is showing, so they keep their values.
+        self.tabBar_sections = QtWidgets.QTabBar()
+        self.stackedWidget_sections = QtWidgets.QStackedWidget()
+        self.tabBar_sections.currentChanged.connect(self.stackedWidget_sections.setCurrentIndex)
+
+        ml.addWidget(self.tabBar_sections)
         self._build_layer_selectors(ml)
-        self._build_fixmap_group(ml)
-        self._build_densify_group(ml)
-        self._build_orientation_group(ml)
-        self._build_fault_group(ml)
-        self._build_geology_group(ml)
-        self._build_simplify_group(ml)
-        self._build_tp_group(ml)
-        ml.addStretch()
+        self._build_priority_group(ml)
+        ml.addWidget(self.stackedWidget_sections, 1)
+
+        self._add_tab("Clean", self._build_fixmap_group, self._build_densify_group)
+        self._add_tab("Points", self._build_orientation_group)
+        self._add_tab("Faults", self._build_fault_group)
+        self._add_tab("Polygons", self._build_geology_group, self._build_simplify_group, self._build_tp_group)
 
         scroll.setWidget(content)
         self.setWidget(scroll)
 
         if COMPACT_MAC:
             self._apply_compact_mac_style(scroll)
+
+    def _add_tab(self, title, *builders):
+        page = QtWidgets.QWidget()
+        vbox = QtWidgets.QVBoxLayout(page)
+        vbox.setSpacing(6)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        for build in builders:
+            build(vbox)
+        vbox.addStretch()
+        self.stackedWidget_sections.addWidget(page)
+        self.tabBar_sections.addTab(title)
 
     def _apply_compact_mac_style(self, top):
         # QGIS sets the font size through an application stylesheet, which
@@ -110,7 +127,7 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
             w.setStyle(self._compact_style)
 
     # ------------------------------------------------------------------
-    # Layer selectors (top, outside groups)
+    # Layer selectors and priority fields (top, shared by all the tabs)
     # ------------------------------------------------------------------
 
     def _build_layer_selectors(self, layout):
@@ -128,6 +145,30 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
             row.addWidget(self._lbl(lbl_text))
             row.addWidget(combo)
             layout.addLayout(row)
+        self.pushButton_show_metadata = QtWidgets.QPushButton("Show metadata of the selected layer in the layer panel")
+        layout.addWidget(self.pushButton_show_metadata)
+
+    def _build_priority_group(self, layout):
+        grp = QtWidgets.QGroupBox("Geology Polygon Priorities")
+        grid = QtWidgets.QGridLayout(grp)
+        self.mFieldComboBox_priority_1 = QgsFieldComboBox()
+        self.mFieldComboBox_priority_2 = QgsFieldComboBox()
+        self.mFieldComboBox_priority_3 = QgsFieldComboBox()
+        self.mFieldComboBox_priority_4 = QgsFieldComboBox()
+        self.mFieldComboBox_priority_5 = QgsFieldComboBox()
+        cells = [
+            ("Priority 1", self.mFieldComboBox_priority_1, 0, 0),
+            ("2", self.mFieldComboBox_priority_2, 0, 2),
+            ("3", self.mFieldComboBox_priority_3, 0, 4),
+            ("4", self.mFieldComboBox_priority_4, 1, 0),
+            ("5", self.mFieldComboBox_priority_5, 1, 2),
+        ]
+        for text, combo, row, col in cells:
+            grid.addWidget(self._lbl(text), row, col)
+            grid.addWidget(combo, row, col + 1)
+        for col in (1, 3, 5):
+            grid.setColumnStretch(col, 1)
+        layout.addWidget(grp)
 
     # ------------------------------------------------------------------
     # Orientation Points group
@@ -318,31 +359,12 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         grp = QtWidgets.QGroupBox("Geology Polygons")
         vbox = QtWidgets.QVBoxLayout(grp)
 
-        # Priority fields — row 1
-        self.mFieldComboBox_priority_1 = QgsFieldComboBox()
-        self.mFieldComboBox_priority_2 = QgsFieldComboBox()
-        self.mFieldComboBox_priority_3 = QgsFieldComboBox()
-        row_p1 = QtWidgets.QHBoxLayout()
-        row_p1.addWidget(self._lbl("Priority 1"))
-        row_p1.addWidget(self.mFieldComboBox_priority_1)
-        row_p1.addWidget(self._lbl("2"))
-        row_p1.addWidget(self.mFieldComboBox_priority_2)
-        row_p1.addWidget(self._lbl("3"))
-        row_p1.addWidget(self.mFieldComboBox_priority_3)
-        vbox.addLayout(row_p1)
-
-        # Priority fields — row 2 + Dyke Field
-        self.mFieldComboBox_priority_4 = QgsFieldComboBox()
-        self.mFieldComboBox_priority_5 = QgsFieldComboBox()
-        self.mFieldComboBox_dyke       = QgsFieldComboBox()
-        row_p2 = QtWidgets.QHBoxLayout()
-        row_p2.addWidget(self._lbl("4"))
-        row_p2.addWidget(self.mFieldComboBox_priority_4)
-        row_p2.addWidget(self._lbl("5"))
-        row_p2.addWidget(self.mFieldComboBox_priority_5)
-        row_p2.addWidget(self._lbl("Ignore Field"))
-        row_p2.addWidget(self.mFieldComboBox_dyke)
-        vbox.addLayout(row_p2)
+        # Ignore (dyke) field
+        self.mFieldComboBox_dyke = QgsFieldComboBox()
+        row_ignore = QtWidgets.QHBoxLayout()
+        row_ignore.addWidget(self._lbl("Ignore Field"))
+        row_ignore.addWidget(self.mFieldComboBox_dyke)
+        vbox.addLayout(row_ignore)
 
         # Dyke codes text box
         self.plainTextEdit_dyke_Codes = QtWidgets.QPlainTextEdit()
@@ -446,7 +468,7 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
     # ---- Töpfer & Pillewizer scaling group ---------------------------
 
     def _build_tp_group(self, layout):
-        grp = QtWidgets.QGroupBox("Töpfer & Pillewizer Scaling")
+        grp = QtWidgets.QGroupBox("Töpfer && Pillewizer Scaling")
         vbox = QtWidgets.QVBoxLayout(grp)
 
         # Equation reminder label
@@ -477,7 +499,7 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         self.lineEdit_tp_increment = QtWidgets.QLineEdit("0.1")
         self.lineEdit_tp_increment.setFixedWidth(70)
         self.label_tp_steps = QtWidgets.QLabel("")
-        self.pushButton_tp_run = QtWidgets.QPushButton("Run T&P Scaling")
+        self.pushButton_tp_run = QtWidgets.QPushButton("Run T&&P Scaling")
         row_params = QtWidgets.QHBoxLayout()
         row_params.addWidget(self._lbl("OS/TS ratio"))
         row_params.addWidget(self.lineEdit_tp_ratio)

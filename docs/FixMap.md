@@ -33,7 +33,7 @@ rarely share it exactly:
 | **Repair (buffer 0)** (separate button) | Only repairs invalid polygons; the first step of Fix Map, on its own. |
 
 Both layers must use the same coordinate system; if they do not, Fix Map stops with a message instead of producing
-nonsense. Results are written as `<layer>_fixed_<tolerance>` plus a text report and a progress file, all in a new folder
+nonsense. Results are written as `<layer>_fixed` plus a text report and a progress file, all in a new folder
 (`Fix_map_<date>_<time>`) next to the input layer, so every run is kept separately; the originals are never changed.
 
 ## 3. The pipeline at a glance
@@ -201,8 +201,8 @@ The report has three parts.
 After a successful run the node, duplicate, invalid and containment counts are 0. Gap and overlap totals depend on the
 settings; the report notes any that remain and why.
 
-In the QGIS plugin the report opens in a window and is saved in the run folder as `<layer>_fixed_<tol>_report.txt`; progress lines (with clock
-times) are also written, as the run goes, to `<layer>_fixed_<tol>_progress.txt`, because QGIS cannot redraw while it works. In
+In the QGIS plugin the report opens in a window and is saved in the run folder as `<layer>_fixed_report.txt`; progress lines (with clock
+times) are also written, as the run goes, to `<layer>_fixed_progress.txt`, because QGIS cannot redraw while it works. In
 the ArcGIS Pro window the same lines appear in the log as the job runs.
 
 ## 7. How it was checked

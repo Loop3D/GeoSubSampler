@@ -50,6 +50,7 @@ from .calcs.StructuralPolygonSubSampler import StructuralPolygonSubSampler
 from .calcs.FaultLineMerger import FaultLineMerger
 from .calcs.FaultLengths import FaultLengths
 from .calcs.FaultStratOffset import FaultStratOffset
+from .calcs.gss_metadata import write_sgt_metadata, read_sgt_metadata, format_sgt_metadata_html, sgt_metadata_xml_text
 from .calcs.FaultClusterOrientation import FaultsOrientations
 from .calcs.FirstOrderOrientation import (SubsamplingEngine, save_grid_to_shapefile, dip_field_problem,
                                           clean_orientations, format_invalid_report)
@@ -111,6 +112,11 @@ class GeoSubSampler:
         self.pluginIsActive = False
         self.dockwidget = None
         self._run_dir = None          # the folder of the current button press (see _run_directory)
+        self._operation = ""          # what the current button press does (for the metadata files)
+        self._meta_params = {}        # the settings of the current button press (for the metadata files)
+        self._meta_sources = []       # the source files of the current button press
+        self._meta_extra_sources = [] # other files the current result was made from, besides its own layer
+        self._layer_group = None      # the layer-tree group for the next result, if not "Outputs"
         self._run_label = ""
 
     # noinspection PyMethodMayBeStatic
@@ -537,8 +543,18 @@ class GeoSubSampler:
         def wrapper(*_args):
             self._run_dir = None                 # a new button press gets a new output folder
             self._run_label = label
+            self._operation = label
+            self._meta_sources = []
+            self._meta_extra_sources = []
+            self._layer_group = None
+            try:
+                self._meta_params = self._collect_parameters(label)
+            except Exception:
+                logging.getLogger(__name__).warning("Could not record the settings of %s", label, exc_info=True)
+                self._meta_params = {}
             try:
                 fn()
+                self._describe_unlisted_outputs()
             except Exception as exc:
                 import traceback
                 traceback.print_exc()
@@ -563,7 +579,7 @@ class GeoSubSampler:
             new_layer.importNamedStyle(doc)
         except Exception:
             logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
-        self._add_to_outputs(new_layer)
+        self._add_to_outputs(new_layer, source_layer)
 
     def _outputs_group(self):
         """The layer-tree group "Outputs" (created at the top of the layer panel if it does not exist)."""
@@ -573,10 +589,183 @@ class GeoSubSampler:
             group = root.insertGroup(0, "Outputs")
         return group
 
-    def _add_to_outputs(self, layer):
-        """Add a result layer to the project, inside the "Outputs" group (newest on top)."""
+    def _tp_group(self):
+        """The layer-tree group "T&P" (created at the top of the layer panel if it does not exist): one scale at a time."""
+        root = QgsProject.instance().layerTreeRoot()
+        group = root.findGroup("T&P")
+        if group is None:
+            group = root.insertGroup(0, "T&P")
+        group.setIsMutuallyExclusive(True)
+        return group
+
+    def _add_to_outputs(self, layer, source_layer=None):
+        """
+        Add a result layer to the project, inside the "Outputs" group (newest on top), and write its metadata
+        file (when, how, with which settings and from which layer it was made) beside it.
+        """
+        try:
+            path = layer.source().split("|")[0]
+            if path.lower().endswith(".shp") and os.path.exists(path):
+                sources = [self._resolved_source(source_layer)] if source_layer is not None else []
+                sources = list(dict.fromkeys(sources + self._meta_extra_sources))
+                self._meta_sources = sources or self._meta_sources
+                self.write_metadata(path, self._operation or self._run_label, self._meta_params, sources)
+        except Exception:
+            logging.getLogger(__name__).debug("Could not write metadata", exc_info=True)
         QgsProject.instance().addMapLayer(layer, False)
-        self._outputs_group().insertLayer(0, layer)
+        if self._layer_group is not None:
+            self._layer_group.addLayer(layer)            # in the order written, so the first draws on top
+        else:
+            self._outputs_group().insertLayer(0, layer)
+
+    # ------------------------------------------------------------------
+    # Metadata: every result gets a <file>.sgt.xml beside it (same format as SGTool's, which can read it)
+    # ------------------------------------------------------------------
+    def _plugin_version(self):
+        try:
+            with open(os.path.join(self.plugin_dir, "metadata.txt"), encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("version="):
+                        return line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+        return None
+
+    def _grid_size_box(self):
+        """The Grid Size box of the selected grid method."""
+        d = self.dockwidget
+        if d.radioButton_kent_outlier.isChecked():
+            return d.lineEdit_grid_size_kent_2
+        if d.radioButton_carmichael.isChecked():
+            return d.lineEdit_grid_size_carm
+        return d.lineEdit_grid_size_kent
+
+    def _collect_parameters(self, label):
+        """
+        The settings this button press uses, as {name: value}. They are listed tool by tool because many tools
+        use settings from other tabs (T&P uses the point and fault methods, for instance). Whatever is only known
+        once a tool has run (a fitted grid size, a random seed, the step of a series) the tool adds itself.
+        """
+        d = self.dockwidget
+
+        def priorities(n=5):
+            combos = [getattr(d, f"mFieldComboBox_priority_{i}") for i in range(1, n + 1)]
+            return {f"priority_{i}": c.currentText() for i, c in enumerate(combos, 1)}
+
+        def ignored():
+            field = d.mFieldComboBox_dyke.currentText()
+            if not field:
+                return {}
+            return {"ignore_field": field, "ignore_codes": self._parse_codes(d.plainTextEdit_dyke_Codes.toPlainText())}
+
+        def point_fields():
+            return {"dip_field": d.mFieldComboBox_dip.currentText(),
+                    "dip_direction_field": d.mFieldComboBox_dip_dir.currentText(),
+                    "direction_field_holds": "dip direction" if d.checkBox_dip_dir.isChecked() else "strike"}
+
+        def first_order():
+            return {"distance": d.lineEdit_1o_distance.text(), "angle_degrees": d.lineEdit_1o_angle.text()}
+
+        def method(group):
+            text = group.checkedButton().text().split(" [")[0]        # without the "[Requires ...]" note
+            return " ".join(text.split())
+
+        if label == "Point subsampling":
+            params = {"method": method(d._subsample_group), **point_fields()}
+            if d.radioButton_stochastic.isChecked():
+                params["retain_percent"] = d.mQgsDoubleSpinBox_percent.value()
+            elif d.radioButton_1o.isChecked():
+                params.update(first_order())
+            else:                                # the grid methods: the tool adds the grid size it used
+                if d.checkBox_target_n.isChecked():
+                    params["auto_fit_to_n_points"] = d.spinBox_target_n.value()
+                if d.radioButton_kent.isChecked():
+                    params["min_kappa"] = d.lineEdit_kent_kappa_min.text().strip()
+                elif d.radioButton_kent_outlier.isChecked():
+                    params["iterative"] = d.checkBox_kent_outlier_iter.isChecked()
+        elif label == "Polygon cleaning":
+            params = {"node_tolerance_m": d.lineEdit_node_tolerance.text(),
+                      "diameter_threshold_km": d.lineEdit_polygon_area.text(),
+                      "series": d.checkBox_series.isChecked(),
+                      **priorities(), **ignored()}
+            if d.checkBox_series.isChecked():
+                params["increment_km"] = d.mQgsDoubleSpinBox_upinc.value()
+        elif label == "Fault segment merging":
+            params = {"distance_m": d.lineEdit_merge_tolerance.text(),
+                      "search_angle_degrees": d.lineEdit_merge_search_angle.text(),
+                      "join_angle_degrees": d.lineEdit_merge_join_angle.text()}
+        elif label == "Fault processing":
+            params = {"method": method(d._fault_group)}
+            if d.radioButton_fault_strat_offset.isChecked():
+                params.update(priorities(4), offset_distance_m=50)
+        elif label == "Töpfer & Pillewizer scaling":
+            params = {"target_os_ts_ratio": d.lineEdit_tp_ratio.text(), "increment": d.lineEdit_tp_increment.text()}
+            if d.mMapLayerComboBox_points.currentLayer() is not None:
+                params.update(point_method=method(d._subsample_group), **point_fields())
+                if d.radioButton_1o.isChecked():
+                    params.update(first_order())
+                elif not d.radioButton_stochastic.isChecked():
+                    params["grid_size_starting_guess_m"] = self._grid_size_box().text()
+            if d.mMapLayerComboBox_fault_polylines.currentLayer() is not None:
+                params["fault_method"] = method(d._fault_group)
+            if d.mMapLayerComboBox_maps_polygons.currentLayer() is not None:
+                params.update(node_tolerance_m=d.lineEdit_node_tolerance.text(), **priorities(), **ignored())
+        elif label == "Map simplification":
+            params = {"method": "modified_visvalingam_whyatt", "area_tolerance_m2": d.lineEdit_area_tolerance.text()}
+        elif label == "Fix map":
+            params = {"tolerance_m": d.lineEdit_fixmap_tolerance.text(),
+                      "fill_enclosed_gaps": d.checkBox_fixmap_fillgaps.isChecked(),
+                      "remaining_overlaps": d.comboBox_fixmap_overlap.currentText()}
+        elif label == "Repair polygons":
+            params = {"method": "buffer(0)"}
+        elif label == "Densify nodes":
+            params = {"node_spacing_m": d.lineEdit_densify_spacing.text(),
+                      "shared_node_at_fault_crossing": d.checkBox_densify_crossings.isChecked()}
+        else:
+            params = {}
+        return {k: v for k, v in params.items() if v not in ("", None, [])}
+
+    def write_metadata(self, output_path, operation, parameters=None, sources=None):
+        """Write <output_path>.sgt.xml (never raises)."""
+        write_sgt_metadata(output_path, sources or None, operation, parameters, self._plugin_version())
+
+    def _describe_unlisted_outputs(self):
+        """Shapefiles this button press wrote that were not added as layers (e.g. the fault graph's nodes) get a metadata file too."""
+        run_dir = self._run_dir
+        if not run_dir or not os.path.isdir(run_dir):
+            return
+        for name in os.listdir(run_dir):
+            if name.lower().endswith(".shp") and not os.path.exists(os.path.join(run_dir, name) + ".sgt.xml"):
+                self.write_metadata(os.path.join(run_dir, name), self._operation or self._run_label,
+                                    self._meta_params, self._meta_sources)
+
+    def showMetadata(self):
+        """Show the history recorded for the active layer in the layer panel (made by this plugin or by SGTool)."""
+        from qgis.PyQt.QtWidgets import QDialog, QVBoxLayout, QTabWidget, QTextBrowser, QPlainTextEdit
+        layer = self.iface.activeLayer()
+        if layer is None:
+            self._warn("Metadata: select a layer in the layer panel first.", level=MSG_INFO)
+            return
+        path = self._resolved_source(layer)
+        root = read_sgt_metadata(path) if os.path.exists(path) else None
+        if root is None:
+            self._warn(f"No metadata found for {layer.name()} (it was not made by GeoSubSampler or SGTool).", level=MSG_INFO)
+            return
+        dlg = QDialog(self.iface.mainWindow())
+        dlg.setWindowTitle(f"Metadata: {layer.name()}")
+        tabs = QTabWidget()
+        summary = QTextBrowser()
+        summary.setHtml(format_sgt_metadata_html(root))
+        raw = QPlainTextEdit()
+        raw.setReadOnly(True)
+        raw.setPlainText(sgt_metadata_xml_text(root))
+        tabs.addTab(summary, "History")
+        tabs.addTab(raw, "XML")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(tabs)
+        dlg.resize(760, 640)
+        self._metadata_dialog = dlg                      # keep a reference
+        dlg.show()
 
     def _run_directory(self, qgis_layer):
         """
@@ -586,6 +775,8 @@ class GeoSubSampler:
         """
         if self._run_dir is None or not os.path.isdir(self._run_dir):
             base = self._output_directory(qgis_layer)
+            if re.match(r"^.+_\d{8}_\d{6}(_\d+)?$", os.path.basename(base)):
+                base = os.path.dirname(base)         # the layer is itself a result: put the new folder beside its folder
             tag = unicodedata.normalize("NFKD", self._run_label or "run").encode("ascii", "ignore").decode()
             tag = re.sub(r"[^A-Za-z0-9]+", "_", tag).strip("_") or "run"
             stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -594,6 +785,12 @@ class GeoSubSampler:
             while os.path.exists(path):
                 n += 1
                 path = os.path.join(base, f"{tag}_{stamp}_{n}")
+            room = len(self._safe_filename(qgis_layer.name())) + 30      # the longest file name added to the folder
+            if len(path) + room > 255:                      # Windows stops at 260 characters, and file names are added to this
+                short = os.path.join(self._fallback_dir(), f"{tag}_{stamp}")
+                self._warn(f"The folder path is too long for Windows ({len(path)} characters); the results of this run "
+                           f"go to {short} instead.", level=MSG_INFO, duration=15)
+                path = short
             try:
                 os.makedirs(path)
             except OSError as exc:
@@ -729,11 +926,7 @@ class GeoSubSampler:
 
     def finalisePointSampler(self, gdf2, qgis_layer, name, param=0):
         layer_path = self._run_directory(qgis_layer)
-        if(param==0):
-            param2 = ''
-
-        else:
-            param2="_"+ str(int(param))
+        param2 = ''                          # parameter values are in the metadata file, not in the name
 
         stem = self._safe_filename(qgis_layer.name())
         new_path = (
@@ -822,9 +1015,11 @@ class GeoSubSampler:
         gdf, engine, dip_col, dip_dir_col = result
         retain_percentage = float(self.dockwidget.mQgsDoubleSpinBox_percent.value())
         frac = retain_percentage / 100.0
+        seed = int(time.time())
+        self._meta_params["random_seed"] = seed
         tmpdir = tempfile.mkdtemp()
         try:
-            gdf2 = engine.stochastic(gdf, frac=frac, random_state=int(time.time()),
+            gdf2 = engine.stochastic(gdf, frac=frac, random_state=seed,
                                      path_out=tmpdir)
             gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
         finally:
@@ -968,6 +1163,7 @@ class GeoSubSampler:
             display_size = grid_size
             if is_geographic:
                 grid_size = grid_size / 110000
+        self._meta_params["grid_size_m"] = round(display_size, 3)
 
         tmpdir = tempfile.mkdtemp()
         try:
@@ -984,8 +1180,7 @@ class GeoSubSampler:
             gdf2 = gdf2.drop(columns=['EASTING', 'NORTHING'], errors='ignore').rename(
                 columns={'DIP': dip_col, 'DIP_DIR': dip_dir_col})
             gdf2 = self._restore_strike(gdf2, gdf, dip_dir_col)
-            name = ("grid_cell_kent" if kappa_min is None
-                    else f"grid_cell_kent_kappa{kappa_min:g}")
+            name = "grid_cell_kent"
             self.finalisePointSampler(gdf2, self.points_layer, name, display_size)
 
     def kentOutlier(self):
@@ -1018,6 +1213,7 @@ class GeoSubSampler:
             display_size = grid_size
             if is_geographic:
                 grid_size = grid_size / 110000
+        self._meta_params["grid_size_m"] = round(display_size, 3)
 
         tmpdir = tempfile.mkdtemp()
         try:
@@ -1060,6 +1256,7 @@ class GeoSubSampler:
             display_size = grid_size
             if is_geographic:
                 grid_size = grid_size / 110000
+        self._meta_params["grid_size_m"] = round(display_size, 3)
 
         tmpdir = tempfile.mkdtemp()
         try:
@@ -1316,7 +1513,7 @@ class GeoSubSampler:
             current_pt_gdf, pt_engine, pt_dip_col, pt_dip_dir_col = pt_result
 
         try:
-            grid_sz = float(self.dockwidget.lineEdit_grid_size_kent.text())
+            grid_sz = float(self._grid_size_box().text())
         except ValueError:
             grid_sz = 5000.0
 
@@ -1355,8 +1552,26 @@ class GeoSubSampler:
             'polygons': len(current_polygon_gdf) if current_polygon_gdf is not None else None,
         }
         exponent = {'points': 1, 'faults': 2, 'polygons': 3}
+        run_params = self._meta_params
+        polygon_source = [self._resolved_source(polygon_layer)] if polygon_layer else []
+        step_groups = {}                     # step -> its group in the layer panel
+        run_time = time.strftime('%H:%M:%S')
 
         def add_report(step, ratio_val, step_ratio_val, layer, method, n_in, n_out, info):
+            # called just before each result is saved: its metadata gets this step's values, as the
+            # file names only number the steps
+            self._meta_params = dict(run_params, step=step, os_ts_ratio=ratio_val, step_ratio=step_ratio_val,
+                                     output_count=n_out,
+                                     **{f"result_{k}": v for k, v in info.items() if k != 'method'})
+            uses_polygons = ((layer == 'points' and point_method == 'firstorder')
+                             or (layer == 'faults' and fault_method == 'strat_offset'))
+            self._meta_extra_sources = polygon_source if uses_polygons else []
+            # one group per step, holding its points, faults and polygons (added in that order); this
+            # run's groups go above those of earlier runs, largest ratio first
+            if step not in step_groups:
+                step_groups[step] = self._tp_group().insertGroup(
+                    len(step_groups), f"Ratio {ratio_val:g} ({run_time})")
+            self._layer_group = step_groups[step]
             on0 = orig_counts[layer]
             report_rows.append({
                 'step': step,
@@ -1374,9 +1589,9 @@ class GeoSubSampler:
 
         # --- Ratio=1 baseline: all layers at full extent ---
         if original_pt_gdf is not None:
-            self.finalisePointSampler(original_pt_gdf, self.points_layer, "tp_1")
             add_report('baseline', 1.0, 1.0, 'points', 'none (all kept)',
                        len(original_pt_gdf), len(original_pt_gdf), {})
+            self.finalisePointSampler(original_pt_gdf, self.points_layer, "tp_1")
 
         if current_fault_gdf is not None:
             ln_full = scale_lines_tp(current_fault_gdf, 1.0, fault_method)
@@ -1387,14 +1602,15 @@ class GeoSubSampler:
             self._add_layer_with_style(ln_layer, fault_layer)
 
         if current_polygon_gdf is not None:
+            add_report('baseline', 1.0, 1.0, 'polygons', 'none (all kept)',
+                       len(current_polygon_gdf), len(current_polygon_gdf), {})
             out_path = self._save_gdf(current_polygon_gdf,
                                       self._make_output_path(polygon_layer, "_tp_1"))
             poly_layer = QgsVectorLayer(out_path, f"{polygon_layer.name()}_tp_1", "ogr")
             self._add_layer_with_style(poly_layer, polygon_layer)
-            add_report('baseline', 1.0, 1.0, 'polygons', 'none (all kept)',
-                       len(current_polygon_gdf), len(current_polygon_gdf), {})
 
         prev_ratio = 1.0
+        step_no = 1                          # file names carry the step (1 = unscaled), the ratios are in the metadata
         for iter_ratio in iterations:
             step_ratio = iter_ratio / prev_ratio   # still needed for lines/polygons
             prev_ratio = iter_ratio
@@ -1402,6 +1618,7 @@ class GeoSubSampler:
 
             if abs(iter_ratio - 1.0) < 1e-9:
                 continue  # ratio=1 baseline already output above
+            step_no += 1
 
             # --- Points (always from original, absolute ratio) ---
             if original_pt_gdf is not None:
@@ -1427,7 +1644,7 @@ class GeoSubSampler:
                     pt_scaled = pt_scaled.drop(columns=drop)
 
                 self.finalisePointSampler(
-                    pt_scaled, self.points_layer, f"tp_{ratio_tag}")
+                    pt_scaled, self.points_layer, f"tp_{step_no}")
 
             # --- Lines ---
             if current_fault_gdf is not None:
@@ -1447,10 +1664,10 @@ class GeoSubSampler:
                            fault_method, n_ln_in, len(ln_scaled), ln_info)
                 current_fault_gdf = ln_scaled
                 out_path = self._save_gdf(
-                    ln_scaled, self._make_output_path(fault_layer, f"_tp_{ratio_tag}"))
+                    ln_scaled, self._make_output_path(fault_layer, f"_tp_{step_no}"))
                 ln_layer = QgsVectorLayer(
                     out_path,
-                    f"{fault_layer.name()}_tp_{ratio_tag}", "ogr")
+                    f"{fault_layer.name()}_tp_{step_no}", "ogr")
                 self._add_layer_with_style(ln_layer, fault_layer)
 
             # --- Polygons ---
@@ -1484,11 +1701,14 @@ class GeoSubSampler:
                            n_poly_in, len(poly_scaled), poly_info)
 
                 out_path = self._save_gdf(
-                    poly_scaled, self._make_output_path(polygon_layer, f"_tp_{ratio_tag}"))
+                    poly_scaled, self._make_output_path(polygon_layer, f"_tp_{step_no}"))
                 poly_layer = QgsVectorLayer(
                     out_path,
-                    f"{polygon_layer.name()}_tp_{ratio_tag}", "ogr")
+                    f"{polygon_layer.name()}_tp_{step_no}", "ogr")
                 self._add_layer_with_style(poly_layer, polygon_layer)
+
+        if step_groups:                      # show the target scale
+            self._tp_group().setIsMutuallyExclusive(True, len(step_groups) - 1)
 
         # --- Write the T&P report (CSV) next to the first available input layer ---
         settings = {
@@ -1591,8 +1811,9 @@ class GeoSubSampler:
                         return
 
                 # Write GeoPandas back to file and reload
+                self._meta_extra_sources = [self._resolved_source(self.polygon_layer)]
                 self.finalisePointSampler(
-                    output_gdf, self.point_layer, f"first_order_{int(distance_threshold)}_{int(angle_threshold)}")
+                    output_gdf, self.point_layer, "first_order")
     def minPolyArea(self):
         self.polygon_layer = (
             self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
@@ -1627,16 +1848,23 @@ class GeoSubSampler:
                     incScale = maxScale 
                     minScale = maxScale
 
-                for upScale in np.arange(minScale, maxScale + 0.001, incScale):
+                if self.polygon_layer.crs().isGeographic():
+                    distance_threshold = distance_threshold / 110000
+
+                n_steps = len(np.arange(minScale, maxScale + 0.001, incScale))
+                run_params = self._meta_params
+                for step_no, upScale in enumerate(np.arange(minScale, maxScale + 0.001, incScale), 1):
+                    if n_steps > 1:              # the file names only number the steps
+                        self._meta_params = dict(run_params, series_step=step_no,
+                                                 diameter_threshold_km=float(upScale))
                     min_area_threshold = ((upScale / 2) ** 2) * np.pi
-                    parameter = str(upScale)
+                    parameter = "" if n_steps == 1 else f"_{step_no}"     # a series: step 1, 2, 3 (the sizes are in the metadata)
                     crs = self.polygon_layer.crs()
                     if crs.isGeographic():
                         min_area_threshold = min_area_threshold / (110000 * 110000)
-                        distance_threshold = distance_threshold / 110000
 
                     new_path = self._make_output_path(
-                        self.polygon_layer, "_min_area_" + parameter)
+                        self.polygon_layer, "_min_area" + parameter)
 
                     # Convert QGIS layer to GeoPandas if first in series
                     if upScale == minScale:
@@ -1679,7 +1907,7 @@ class GeoSubSampler:
                     # reload as layer
                     upscaled_layer = QgsVectorLayer(
                         new_path,
-                        self.polygon_layer.name() + "_min_area_" + parameter,
+                        self.polygon_layer.name() + "_min_area" + parameter,
                         "ogr",
                     )
 
@@ -1782,6 +2010,7 @@ class GeoSubSampler:
             strat_columns = [self._resolved_field(self.map_layer, c) for c in strat_columns]
 
             strat_offset_obj = FaultStratOffset()
+            self._meta_extra_sources = [self._resolved_source(self.map_layer)]
             new_path = self._make_output_path(self.polyline_layer, "_stratOffset")
             strat_offset_obj.CalcFaultStratOffset(
                 self._resolved_source(self.polyline_layer),
@@ -1804,7 +2033,7 @@ class GeoSubSampler:
                 samples_layer = QgsVectorLayer(
                     samples_path, self.polyline_layer.name() + "_stratOffset_samples", "ogr")
                 if samples_layer.isValid():
-                    self._add_to_outputs(samples_layer)
+                    self._add_to_outputs(samples_layer, self.polyline_layer)
 
     def fault_Lengths(self):
         self.polyline_layer = (
@@ -1867,6 +2096,7 @@ class GeoSubSampler:
                 safe_layer_name,
                 azimuth_field="endpt_az",
             )
+            self._meta_params = dict(self._meta_params, best_number_of_clusters=best_n)
             if best_n is None:
                 self.iface.messageBar().pushMessage(
                     "Could not cluster faults - too few faults with distinct orientations (see console).",
@@ -1876,16 +2106,16 @@ class GeoSubSampler:
                 return
             # the clustering step writes beside outPath, using the same safe name
             new_path = os.path.join(
-                os.path.dirname(outPath), safe_layer_name + f"_fault_clusters_{best_n}.shp")
+                os.path.dirname(outPath), safe_layer_name + "_fault_clusters.shp")
 
             upscaled_layer = QgsVectorLayer(
                 new_path,
-                self.polyline_layer.name() + f"_fault_clusters_{best_n}",
+                self.polyline_layer.name() + "_fault_clusters",
                 "ogr",
             )
 
             self._add_layer_with_style(upscaled_layer, self.polyline_layer,
-                                       self.polyline_layer.name() + f"_fault_clusters_{best_n}")
+                                       self.polyline_layer.name() + "_fault_clusters")
 
     def updatePointsFields(self):
         """Update the fields in the points layer combo box when a new layer is selected."""
@@ -1905,12 +2135,13 @@ class GeoSubSampler:
         area_tolerance = int(self.dockwidget.lineEdit_area_tolerance.text())
         input_file = self._resolved_source(polygon_layer)
         fault_file = self._resolved_source(fault_layer)
-        output_file = self._make_output_path(polygon_layer, f"_MVW_{area_tolerance}")
-        poly_name=polygon_layer.name()+f"_MVW_{area_tolerance}"
+        self._meta_extra_sources = [input_file, fault_file]
+        output_file = self._make_output_path(polygon_layer, "_MVW")
+        poly_name=polygon_layer.name()+"_MVW"
         # the faults are written beside the polygon output, as <fault name>_sn_si_<tolerance>.shp
         fault_path = os.path.join(os.path.dirname(output_file),
-                                  os.path.splitext(os.path.basename(fault_file))[0] + f"_sn_si_{area_tolerance}.shp")
-        fault_name=fault_layer.name()+f"_sn_si_{area_tolerance}"
+                                  os.path.splitext(os.path.basename(fault_file))[0] + "_sn_si.shp")
+        fault_name=fault_layer.name()+"_sn_si"
         result = vector_simplify_file_two_stage(
                         input_file=input_file,
                         output_file=output_file,
@@ -1975,13 +2206,15 @@ class GeoSubSampler:
         self._warn("Fix Map is running; this can take a few minutes for large maps ...", level=MSG_INFO, duration=5)
         geographic = any(l.crs().isGeographic() for l in layers)
         sources = [self._resolved_source(l) for l in layers]
+        self._meta_extra_sources = sources
         # QGIS cannot redraw while this runs, so each progress line is also written to a text file
         # (flushed at once) that can be opened in an editor to watch the run
-        progress_path = os.path.splitext(self._make_output_path(layers[0], f"_fixed_{tol:g}"))[0] + "_progress.txt"
+        progress_path = os.path.splitext(self._make_output_path(layers[0], "_fixed"))[0] + "_progress.txt"
         try:
             progress_file = open(progress_path, "w", encoding="utf-8")
-        except OSError:
+        except OSError as exc:
             progress_file = None
+            self._warn(f"Fix Map: could not create the progress file {progress_path}: {exc}", level=MSG_INFO, duration=15)
         t_run = time.time()
 
         def progress(line):
@@ -1998,7 +2231,7 @@ class GeoSubSampler:
         finally:
             if progress_file is not None:
                 progress_file.close()
-        tag = f"_fixed_{tol:g}"
+        tag = "_fixed"
         first_out = None
         outputs = []
         for layer, gdf in zip(layers, results):
@@ -2066,10 +2299,11 @@ class GeoSubSampler:
                 return
             gdfs.append(gpd.read_file(path))
         geographic = any(l.crs().isGeographic() for l in layers)
+        self._meta_extra_sources = [self._resolved_source(l) for l in layers]
         results, stats = densify_layers(
             gdfs, spacing, geographic=geographic,
             node_crossings=self.dockwidget.checkBox_densify_crossings.isChecked())
-        tag = f"_dense_{spacing:g}"
+        tag = "_dense"
         for layer, gdf in zip(layers, results):
             out_path = self._save_gdf(gdf, self._make_output_path(layer, tag))
             self._add_layer_with_style(QgsVectorLayer(out_path, layer.name() + tag, "ogr"), layer,
@@ -2254,7 +2488,7 @@ class GeoSubSampler:
             "Does not filter data, just adds graph attributes"
         )
         self.dockwidget.radioButton_fault_clusters.setToolTip(
-            "Add suite of orientation cluster data to faults (2-7 clusters)\n"
+            "Add orientation cluster data to faults (the best of 2-30 clusters)\n"
             "Does not filter data, just adds cluster attributes"
         )
         self.dockwidget.radioButton_fault_strat_offset.setToolTip(
@@ -2281,7 +2515,8 @@ class GeoSubSampler:
         )
         self.dockwidget.pushButton_tp_run.setToolTip(
             "Apply Töpfer & Pillewizer scaling to all selected layers.\n"
-            "Uses the orientation and fault methods selected above."
+            "Uses the methods selected on the Points and Faults tabs; a grid method\n"
+            "starts its search for the target count from its own Grid Size."
         )
         self.dockwidget.lineEdit_area_tolerance.setToolTip(
             "Tolerance for area-based filtering, in m2"
@@ -2304,7 +2539,7 @@ class GeoSubSampler:
             "  at triple junctions made identical; faults snapped onto nearby contacts and faults\n"
             "- nodes added where lines cross\n"
             "Bigger polygons are never moved by smaller ones, and polygons never by faults.\n"
-            "Saves <layer>_fixed_<tol> and a text report, and shows the report."
+            "Saves <layer>_fixed and a text report in a new folder, and shows the report."
         )
         self.dockwidget.pushButton_repair_polygons.setToolTip(
             "Repair invalid polygons (self-intersections etc.) with buffer(0).\n"
@@ -2415,6 +2650,8 @@ class GeoSubSampler:
             self.dockwidget.pushButton_densify.clicked.connect(
                 self._guard(self.densify, "Densify nodes")
             )
+            self.dockwidget.pushButton_show_metadata.clicked.connect(
+                lambda *_a: self.showMetadata())
             self.dockwidget.mFieldComboBox_dip.setAllowEmptyFieldName(True)
             self.dockwidget.mFieldComboBox_dip.setCurrentIndex(0)
             self.dockwidget.mFieldComboBox_dip_dir.setAllowEmptyFieldName(True)

@@ -1170,6 +1170,21 @@ def fix_map(layers, tol_m, geographic=None, repair=True, node_crossings=True, mi
                 stats["repair_final"] = rinfo
                 log(f"Repaired {rinfo['repaired']} polygons that were still self-intersecting at the end")
 
+    # the last conform rounds, the crossing nodes and the final repair can move an edge by up to the tolerance (or add
+    # a loop back), which can open a small new overlap after the settle step: one last sweep with the same rule
+    if overlap_rule:
+        t0 = time.time()
+        for i, k in enumerate(kinds):
+            if k == "polygon":
+                work[i], winfo = remove_overlaps(work[i], overlap_rule)
+                if winfo["pairs"]:
+                    sw_ = stats.setdefault("wide_overlaps", {"pairs": 0, "area": 0.0, "removed": [], "examples": []})
+                    sw_["pairs"] += winfo["pairs"]
+                    sw_["area"] += winfo["area"] * K[0] * K[1]
+                    sw_["removed"] += winfo["removed"]
+                    sw_["examples"] = (sw_["examples"] + winfo["examples"])[:10]
+                    log(f"Final sweep: cut {winfo['pairs']} small overlaps that the last rounds had opened ({time.time() - t0:.1f} s)")
+
     t0 = time.time()
     after = topology_report(work, tol_m, geographic, kinds)
     log(f"Measured the final state ({time.time() - t0:.1f} s)")
