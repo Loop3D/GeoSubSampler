@@ -42,12 +42,12 @@ text report), geology polygons (Rescale Map, Simplify Map, **Densify Nodes**) an
 * **Fix Map** (settings: Tolerance, Fill enclosed gaps, Remaining overlaps; see
   [How Fix Map works](../docs/FixMap.md)) repairs invalid polygons, removes doubled polygons/faults, cuts holes for polygons inside polygons,
   closes small gaps and overlaps and matches nodes within the tolerance (metres), and adds nodes where lines cross.
-  Outputs are `<layer>_fixed_<tol>` shapefiles plus `<layer>_fixed_<tol>_report.txt`. **Remaining overlaps** cuts any
+  Outputs are `<layer>_fixed` shapefiles plus `<layer>_fixed_report.txt`. **Remaining overlaps** cuts any
   overlap left at the end out of the bigger (default), the smaller, or neither polygon.
   **Fill enclosed gaps** (on by default) fills every gap completely surrounded
   by polygons, of any width or size, with the neighbour sharing the longest boundary.
 * **Densify Nodes** uses the selected polygon and/or fault layer, with a node spacing in metres; with both, new
-  nodes are shared between them. Outputs are `<layer>_dense_<spacing>` shapefiles.
+  nodes are shared between them. Outputs are `<layer>_dense` shapefiles.
 * **Strat Offset** also writes `<fault layer>_stratOffset_samples` (a point layer of where the offset was read,
   with the offset level and the units either side); it is added to the map without copying symbology.
 * Feature classes in a geodatabase are exported once to a shapefile (field names shortened to

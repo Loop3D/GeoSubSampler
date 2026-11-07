@@ -16,6 +16,8 @@ Layer record keys:
 
 import logging
 import csv
+import functools
+import inspect
 import math
 import os
 import random
@@ -33,6 +35,7 @@ from calcs.StructuralPolygonSubSampler import StructuralPolygonSubSampler
 from calcs.FaultLineMerger import FaultLineMerger
 from calcs.FaultLengths import FaultLengths
 from calcs.FaultStratOffset import FaultStratOffset
+from calcs.gss_metadata import write_sgt_metadata
 from calcs.FaultClusterOrientation import FaultsOrientations
 from calcs.FirstOrderOrientation import (SubsamplingEngine, save_grid_to_shapefile,
                                          dip_field_problem, clean_orientations,
@@ -87,6 +90,65 @@ def shapefile_safe_columns(columns):
     return mapping
 
 
+def _plain(value):
+    """A setting as text-friendly data for the metadata file."""
+    if isinstance(value, (bool, int, float, str)) or value is None:
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return [_plain(v) for v in value]
+    return str(value)
+
+
+def _operation(name):
+    """
+    Marks a processor method as one of the operations: its arguments (the layers as their file paths, the other
+    settings as they are) are remembered so every file written during the call can get a metadata file.
+    """
+    def decorate(fn):
+        signature = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            sources, params = [], {}
+            try:
+                bound = signature.bind(self, *args, **kwargs)
+                bound.apply_defaults()
+                for key, value in bound.arguments.items():
+                    if key == "self":
+                        continue
+                    if isinstance(value, dict) and "source" in value:        # a layer
+                        sources.append(self.resolved_source(value))
+                    elif isinstance(value, dict):                            # a group of settings
+                        for k, v in value.items():
+                            if isinstance(v, dict) and "source" in v:
+                                continue
+                            params[str(k)] = _plain(v)
+                    elif value is not None:
+                        params[key] = _plain(value)
+            except Exception:
+                logging.getLogger(__name__).debug("could not record the settings", exc_info=True)
+            self._meta_operation = self._run_label or name
+            self._meta_params = params
+            self._meta_sources = sources
+            return fn(self, *args, **kwargs)
+        return wrapper
+    return decorate
+
+
+def _plugin_version():
+    """The version in the plugin's metadata.txt (one folder above calcs/)."""
+    try:
+        import calcs
+        folder = os.path.dirname(os.path.dirname(os.path.abspath(calcs.__file__)))
+        with open(os.path.join(folder, "metadata.txt"), encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("version="):
+                    return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return None
+
+
 class GSSProcessor:
     """
     All GeoSubSampler operations.  `log(message, level)` receives progress / warning text
@@ -96,6 +158,9 @@ class GSSProcessor:
 
     def __init__(self, log=print, add_output=None, fallback_dir=None, run_label=""):
         self._run_dir = None         # the folder of this run (see _run_directory)
+        self._meta_operation = run_label
+        self._meta_params = {}
+        self._meta_sources = []
         self._run_label = run_label
         self._log = log
         self._add_output = add_output or (lambda path, like: None)
@@ -222,6 +287,8 @@ class GSSProcessor:
         """
         if self._run_dir is None or not os.path.isdir(self._run_dir):
             base = self._output_directory(rec)
+            if re.match(r"^.+_\d{8}_\d{6}(_\d+)?$", os.path.basename(base)):
+                base = os.path.dirname(base)         # the layer is itself a result: put the new folder beside its folder
             tag = unicodedata.normalize("NFKD", self._run_label or "run").encode("ascii", "ignore").decode()
             tag = re.sub(r"[^A-Za-z0-9]+", "_", tag).strip("_") or "run"
             stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -230,6 +297,12 @@ class GSSProcessor:
             while os.path.exists(path):
                 n += 1
                 path = os.path.join(base, f"{tag}_{stamp}_{n}")
+            room = len(safe_filename(rec["name"])) + 30      # the longest file name added to the folder
+            if len(path) + room > 255:                      # Windows stops at 260 characters, and file names are added to this
+                short = os.path.join(self._fallback_dir(), f"{tag}_{stamp}")
+                self.warn(f"The folder path is too long for Windows ({len(path)} characters); the results of this run "
+                          f"go to {short} instead.")
+                path = short
             try:
                 os.makedirs(path)
             except OSError as exc:
@@ -266,6 +339,11 @@ class GSSProcessor:
             self.warn(f"Expected output was not produced: {path}")
             return
         self.log(f"Created {path}")
+        if path.lower().endswith(".shp"):
+            sources = list(self._meta_sources)
+            if like_rec is not None and not sources:
+                sources = [self.resolved_source(like_rec)]
+            write_sgt_metadata(path, sources or None, self._meta_operation, self._meta_params, _plugin_version())
         self._add_output(path, like_rec["name"] if like_rec else None)
 
     # ------------------------------------------------------------------ points
@@ -310,7 +388,7 @@ class GSSProcessor:
 
     def _finalise_points(self, gdf2, rec, name, param=0):
         """Write a point result next to its source and queue it for the map."""
-        suffix = "" if param == 0 else "_" + str(int(param))
+        suffix = ""                          # parameter values are in the metadata file, not in the name
         stem = safe_filename(rec["name"]) + "_" + safe_filename(name) + suffix
         folder = self._run_directory(rec)
         new_path = os.path.join(folder, stem + ".shp")
@@ -338,12 +416,15 @@ class GSSProcessor:
         return gdf.drop(columns=[c for c in ['EASTING', 'NORTHING', '_eff_dipdir']
                                  if c in gdf.columns])
 
+    @_operation("Stochastic subsampling")
     def stochastic(self, rec, dip, dipdir, is_dipdir, percent):
         gdf, engine, _, _ = self._setup_points(rec, dip, dipdir, is_dipdir, check_fields=False)
+        seed = int(time.time())
+        self._meta_params["random_seed"] = seed
         tmpdir = tempfile.mkdtemp()
         try:
             gdf2 = engine.stochastic(gdf, frac=percent / 100.0,
-                                     random_state=int(time.time()), path_out=tmpdir)
+                                     random_state=seed, path_out=tmpdir)
             gdf2 = gdf2.set_crs(gdf.crs, allow_override=True)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -418,6 +499,7 @@ class GSSProcessor:
                 hi = mid
         return best_cs, best_n
 
+    @_operation("Grid-cell subsampling")
     def grid_method(self, kind, rec, dip, dipdir, is_dipdir, grid_size, target_n=None,
                     kappa_min=None, iterative=False):
         """
@@ -443,8 +525,6 @@ class GSSProcessor:
                  "outlier_carmichael": "grid_cell_carmichael"}[kind]
         if iterative:
             label += "Iter"
-        if kappa_min is not None:
-            label += f"_kappa{kappa_min:g}"
         geographic = bool(rec.get("geographic"))
         b = gdf.total_bounds
         bounds = (int(b[0]), int(b[2]) + 1, int(b[1]), int(b[3]) + 1)
@@ -464,6 +544,7 @@ class GSSProcessor:
         else:
             display = float(grid_size)
             size = display / DEG_PER_M_INV if geographic else display
+        self._meta_params["grid_size_used_m"] = round(display, 3)
 
         tmpdir = tempfile.mkdtemp()
         try:
@@ -488,6 +569,7 @@ class GSSProcessor:
             self._finalise_points(gdf2, rec, label, display)
         return display
 
+    @_operation("First order subsampling")
     def first_order(self, point_rec, poly_rec, dip, dipdir, is_dipdir, distance, angle):
         if point_rec is None or poly_rec is None:
             raise GSSError("1o Sampling needs both a points layer and a polygon layer.")
@@ -510,9 +592,10 @@ class GSSProcessor:
         if out is None:
             return
         out = out.drop(columns=['_eff_dipdir'], errors='ignore')
-        self._finalise_points(out, point_rec, f"first_order_{int(distance)}_{int(angle)}")
+        self._finalise_points(out, point_rec, "first_order")
 
     # ------------------------------------------------------------------ polygons
+    @_operation("Rescale map")
     def rescale_map(self, poly_rec, p):
         """
         Remove polygons below a diameter threshold (km). p keys: node_tolerance, diameter_km,
@@ -535,11 +618,15 @@ class GSSProcessor:
             dist = dist / DEG_PER_M_INV
 
         gdf = None
-        for up_scale in np.arange(min_scale, max_scale + 0.001, inc):
+        n_steps = len(np.arange(min_scale, max_scale + 0.001, inc))
+        run_params = self._meta_params
+        for step_no, up_scale in enumerate(np.arange(min_scale, max_scale + 0.001, inc), 1):
+            if n_steps > 1:                      # the file names only number the steps
+                self._meta_params = dict(run_params, series_step=step_no, diameter_km=float(up_scale))
             min_area = ((up_scale / 2) ** 2) * np.pi          # km2
             if geographic:
                 min_area = min_area / (DEG_PER_M_INV ** 2)
-            new_path = self._make_output_path(poly_rec, "_min_area_" + str(up_scale))
+            new_path = self._make_output_path(poly_rec, "_min_area" + ("" if n_steps == 1 else f"_{step_no}"))
             if gdf is None:
                 gdf = gpd.read_file(self.resolved_source(poly_rec))
 
@@ -583,17 +670,19 @@ class GSSProcessor:
             self.log(f"Ignore codes: {s['triangulated']} of {s['matched']} matching polygon(s) "
                      f"triangulated ({s['above_threshold']} above the area threshold left as is).")
 
+    @_operation("Simplify map")
     def simplify_map(self, poly_rec, fault_rec, area_tolerance):
         if poly_rec is None or fault_rec is None:
             raise GSSError("Map simplification: select both a polygon layer and a fault layer.")
         from calcs.PolygonSimplification import vector_simplify_file_two_stage   # (loaded when needed)
         area_tolerance = int(area_tolerance)
+        self._meta_params["method"] = "modified_visvalingam_whyatt"
         input_file = self.resolved_source(poly_rec)
         fault_file = self.resolved_source(fault_rec)
-        output_file = self._make_output_path(poly_rec, f"_MVW_{area_tolerance}")
+        output_file = self._make_output_path(poly_rec, "_MVW")
         # the faults are written beside the polygon output, as <fault name>_sn_si_<tolerance>.shp
         fault_out = os.path.join(os.path.dirname(output_file),
-                                 os.path.splitext(os.path.basename(fault_file))[0] + f"_sn_si_{area_tolerance}.shp")
+                                 os.path.splitext(os.path.basename(fault_file))[0] + "_sn_si.shp")
         vector_simplify_file_two_stage(
             input_file=input_file, output_file=output_file,
             method="modified_visvalingam_whyatt", threshold=area_tolerance,
@@ -601,6 +690,7 @@ class GSSProcessor:
         self._emit(output_file, poly_rec)
         self._emit(fault_out, fault_rec)
 
+    @_operation("Fix map")
     def fix_map(self, poly_rec, fault_rec, tol_m, fill_gaps=True, overlap_rule="smaller"):
         """
         Make the polygon and fault layers topologically consistent within ``tol_m`` metres (repair,
@@ -620,11 +710,12 @@ class GSSProcessor:
         except ValueError as exc:
             raise GSSError(f"Fix Map: {exc}")
         # every progress line is also written, with the clock time, to a text file in the run folder
-        progress_path = os.path.splitext(self._make_output_path(recs[0], f"_fixed_{tol_m:g}"))[0] + "_progress.txt"
+        progress_path = os.path.splitext(self._make_output_path(recs[0], "_fixed"))[0] + "_progress.txt"
         try:
             progress_file = open(progress_path, "w", encoding="utf-8")
-        except OSError:
+        except OSError as exc:
             progress_file = None
+            self.warn(f"Could not create the progress file {progress_path}: {exc}")
         t_run = time.time()
 
         def progress(line):
@@ -642,7 +733,7 @@ class GSSProcessor:
         finally:
             if progress_file is not None:
                 progress_file.close()
-        tag = f"_fixed_{tol_m:g}"
+        tag = "_fixed"
         first = None
         outputs = []
         for rec, gdf in zip(recs, results):
@@ -656,6 +747,7 @@ class GSSProcessor:
             fh.write(report)
         self.log(f"Fix Map report written to {report_path}")
 
+    @_operation("Repair polygons")
     def repair_polygons(self, poly_rec):
         """Repair invalid polygons with buffer(0)."""
         from calcs.FixMap import repair_polygons
@@ -669,6 +761,7 @@ class GSSProcessor:
         self.log(f"Repaired {info['repaired']} of {info['invalid']} invalid polygons"
                  + (f"; could not repair {info['failed']}" if info["failed"] else "") + ".")
 
+    @_operation("Densify nodes")
     def densify(self, poly_rec, fault_rec, spacing_m, node_crossings=True):
         """
         Insert nodes so that no segment is longer than ``spacing_m`` metres, keeping the polygon and
@@ -689,7 +782,7 @@ class GSSProcessor:
         results, stats = densify_layers(gdfs, spacing_m,
                                         geographic=any(r.get("geographic") for r in recs),
                                         node_crossings=node_crossings)
-        tag = f"_dense_{spacing_m:g}"
+        tag = "_dense"
         for rec, gdf in zip(recs, results):
             self._emit(self._save_gdf(gdf, self._make_output_path(rec, tag)), rec)
         msg = f"Densified to {spacing_m:g} m: {stats['vertices_in']} -> {stats['vertices_out']} vertices"
@@ -700,6 +793,7 @@ class GSSProcessor:
         self.log(msg + ".")
 
     # ------------------------------------------------------------------ faults
+    @_operation("Merge fault segments")
     def merge_segments(self, fault_rec, tolerance, search_angle, join_angle):
         if fault_rec is None:
             raise GSSError("Select a fault layer first.")
@@ -711,6 +805,7 @@ class GSSProcessor:
         out = merger.process_shapefile(gdf)
         self._emit(self._save_gdf(out, new_path), fault_rec)
 
+    @_operation("Fault processing")
     def process_faults(self, method, fault_rec, poly_rec=None, prio_fields=()):
         """method: "length" | "graph" | "strat_offset" | "clusters"."""
         if fault_rec is None:
@@ -740,6 +835,7 @@ class GSSProcessor:
             if not cols:
                 raise GSSError("Fault Strat Offset: select at least one priority field.")
             out = self._make_output_path(fault_rec, "_stratOffset")
+            self._meta_params["offset_distance_m"] = 50
             FaultStratOffset().CalcFaultStratOffset(
                 src, self.resolved_source(poly_rec), out, cols, offset_distance=50)
             self._emit(out, fault_rec)
@@ -752,11 +848,12 @@ class GSSProcessor:
             fo.add_endpoint_azimuth(src, out_az, azimuth_field="endpt_az")
             safe_name = safe_filename(fault_rec["name"])
             best_n = fo.example_manual_clusters(out_az, safe_name, azimuth_field="endpt_az")
+            self._meta_params["best_number_of_clusters"] = best_n
             if best_n is None:
                 raise GSSError("Could not cluster faults - too few faults with distinct "
                                "orientations.")
             self._emit(os.path.join(os.path.dirname(out_az),
-                                    safe_name + f"_fault_clusters_{best_n}.shp"), fault_rec)
+                                    safe_name + "_fault_clusters.shp"), fault_rec)
         else:
             raise GSSError(f"Unknown fault method '{method}'.")
 
@@ -823,6 +920,7 @@ class GSSProcessor:
                     shutil.rmtree(tmpdir, ignore_errors=True)
         return gdf
 
+    @_operation("Topfer & Pillewizer scaling")
     def topfer_pillewizer(self, point_rec, fault_rec, poly_rec, p):
         """
         Töpfer & Pillewizer scaling of whichever layers are given.
@@ -882,8 +980,13 @@ class GSSProcessor:
                 'faults': len(cur_fault) if cur_fault is not None else None,
                 'polygons': len(cur_poly) if cur_poly is not None else None}
         exponent = {'points': 1, 'faults': 2, 'polygons': 3}
+        run_params = self._meta_params
 
         def add_report(step, r, step_r, layer, method, n_in, n_out, info):
+            # called just before each result is saved: its metadata gets this step's values, as the
+            # file names only number the steps
+            self._meta_params = dict(run_params, step=step, os_ts_ratio=r, step_ratio=step_r, output_count=n_out,
+                                     **{f"result_{k}": _plain(v) for k, v in info.items() if k != 'method'})
             rows.append({
                 'step': step, 'OS/TS ratio': r, 'step ratio': step_r, 'layer': layer,
                 'method': method, 'input count': n_in,
@@ -895,9 +998,9 @@ class GSSProcessor:
 
         # ratio = 1 baseline
         if original_pt is not None:
-            self._finalise_points(self._drop_helpers(original_pt), point_rec, "tp_1")
             add_report('baseline', 1.0, 1.0, 'points', 'none (all kept)',
                        len(original_pt), len(original_pt), {})
+            self._finalise_points(self._drop_helpers(original_pt), point_rec, "tp_1")
         if cur_fault is not None:
             full = scale_lines_tp(cur_fault, 1.0, fault_method)
             add_report('baseline', 1.0, 1.0, 'faults', fault_method,
@@ -905,18 +1008,20 @@ class GSSProcessor:
             self._emit(self._save_gdf(full, self._make_output_path(fault_rec, "_tp_1")),
                        fault_rec)
         if cur_poly is not None:
-            self._emit(self._save_gdf(cur_poly, self._make_output_path(poly_rec, "_tp_1")),
-                       poly_rec)
             add_report('baseline', 1.0, 1.0, 'polygons', 'none (all kept)',
                        len(cur_poly), len(cur_poly), {})
+            self._emit(self._save_gdf(cur_poly, self._make_output_path(poly_rec, "_tp_1")),
+                       poly_rec)
 
         prev = 1.0
+        step_no = 1                          # 1 = the unscaled data
         for ir in iterations:
             step_ratio = ir / prev
             prev = ir
             tag = f"{ir:.6f}".rstrip('0').rstrip('.')
             if abs(ir - 1.0) < 1e-9:
                 continue
+            step_no += 1
             self.log(f"T&P ratio {tag} ...")
 
             if original_pt is not None:
@@ -930,7 +1035,7 @@ class GSSProcessor:
                 if point_method == 'firstorder' and len(scaled) < expected:
                     self.warn(f"T&P ratio {ir}: only {len(scaled)} points pass the 1o "
                               f"distance/angle limits (target {expected}).")
-                self._finalise_points(self._drop_helpers(scaled), point_rec, f"tp_{tag}")
+                self._finalise_points(self._drop_helpers(scaled), point_rec, f"tp_{step_no}")
 
             if cur_fault is not None:
                 if fault_method == 'graph':
@@ -944,7 +1049,7 @@ class GSSProcessor:
                            n_in, len(scaled), info)
                 cur_fault = scaled
                 self._emit(self._save_gdf(
-                    scaled, self._make_output_path(fault_rec, f"_tp_{tag}")), fault_rec)
+                    scaled, self._make_output_path(fault_rec, f"_tp_{step_no}")), fault_rec)
 
             if cur_poly is not None:
                 info, n_in = {}, len(cur_poly)
@@ -967,7 +1072,7 @@ class GSSProcessor:
                 add_report(f"ratio {tag}", ir, step_ratio, 'polygons',
                            'merge smallest into best-matching neighbour', n_in, len(scaled), info)
                 self._emit(self._save_gdf(
-                    scaled, self._make_output_path(poly_rec, f"_tp_{tag}")), poly_rec)
+                    scaled, self._make_output_path(poly_rec, f"_tp_{step_no}")), poly_rec)
 
         settings = {
             'target OS/TS ratio': ratio, 'increment': increment,

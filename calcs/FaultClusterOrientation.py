@@ -985,7 +985,7 @@ class FaultsOrientations:
             best_idx = np.argmax(silhouette_scores)
             best_n = cluster_numbers[best_idx]
             if not write_all:
-                best_path = layer_path + "/" + layer_name + f"_fault_clusters_{best_n}.shp"
+                best_path = layer_path + "/" + layer_name + "_fault_clusters.shp"
                 kept[best_n].to_file(best_path)
                 print(f"Results saved to: {best_path}")
             print(

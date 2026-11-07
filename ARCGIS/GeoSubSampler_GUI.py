@@ -883,7 +883,8 @@ class App(tk.Tk):
                 "is_dipdir": self.v_is_dipdir.get(),
                 "point_method": self.v_method.get(),       # the radio values are the engine names
                 "fault_method": self.v_fault_method.get(),
-                "grid_size": self.v_grid_kent.get(),
+                "grid_size": {"outlier_removal": self.v_grid_ko, "outlier_carmichael": self.v_grid_carm}.get(
+                    self.v_method.get(), self.v_grid_kent).get(),
                 "fo_distance": self.v_fo_dist.get(), "fo_angle": self.v_fo_angle.get()})
             return (self._rec("point", self.v_points), self._rec("line", self.v_faults),
                     self._rec("polygon", self.v_polys), params)
