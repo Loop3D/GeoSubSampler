@@ -442,10 +442,6 @@ These are listed in `requirements.txt`. Most of them ship with QGIS; scikit-lear
 
 This program is free software under the MIT License.   
 
-## Future work   
-- Add Ranee's code for simplification of fault/polygon sets preserving topology
-- Simplify fault arrays suing topological constraints   
-   
 ## Author
 
 **Ranee Joshi-most calculation code**  
