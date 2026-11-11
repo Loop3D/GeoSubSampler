@@ -398,7 +398,7 @@ denominators, and x = 1 for points, 2 for lines, 3 for polygons. Going from 1:50
 | Setting | Meaning |
 |---|---|
 | **OS/TS ratio** | the target ratio, above 0 and at most 1 |
-| **Increment** | the step between ratios: with 0.25 and 0.25 the steps are 0.75, 0.5, 0.25 (the number of steps is shown beside it) |
+| **Increment** | the step between ratios: with 0.1 and 0.1 the steps are 0.9, 0.8 ... 0.1 (the number of steps is shown beside it) |
 
 It uses the settings of the other tabs, for whichever of the three layers are selected:
 
@@ -414,14 +414,18 @@ It uses the settings of the other tabs, for whichever of the three layers are se
   count is reached, using the priorities and the Tolerance and Ignore settings of the Geology Polygons
   group. Each step works from the previous step's polygons.
 
-Example (0.25 / 0.25, Kent and Length Only, 5.5 s):
+Example (ratio 0.1, increment 0.1, Kent and Length Only, 15 s). The run writes all nine steps; four are
+shown here:
 
-| Step | Points (target) | Faults | Polygons |
+| OS/TS | Points (target) | Faults | Polygons |
 |---|---|---|---|
 | 1 (unscaled) | 477 | 1 403 | 1 121 |
-| 0.75 | 364 (413) | 1 052 | 728 |
-| 0.5 | 299 (337) | 701 | 396 |
-| 0.25 | 204 (238) | 350 | 140 |
+| 0.5 | 299 (337) | 702 | 396 |
+| 0.3 | 237 (261) | 421 | 184 |
+| 0.1 | 156 (151) | 140 | 35 |
+
+Faults and polygons hit their targets (ON × 0.5, ON × 0.5^1.5 ...) to within one feature; the grid search for
+the points stops once it is within ±15%.
 
 ![T&P steps](images/tp_steps.png)
 
@@ -507,7 +511,7 @@ The **History** tab shows it as a table; the **XML** tab shows the file.
 - Merge Segments drops the attributes of the faults.
 - In T&P polygon scaling, the last few merges needed to hit the target exactly (after the bulk merge) try
   the lithology field (Priority 5) **before** Priority 1-4, whereas Rescale Map tries it last. In the
-  example this affected 1, 4 and 5 polygons at the three steps.
+  example this affected up to 6 polygons per step.
 - With Ignore Codes, the output polygons get extra columns from the triangulation (`rec_id`, `rec_type`,
   `tri_id`, `src_id`, `src_index`, `orig_id`, `area`, and filler columns `field_str`, `field_float`,
   `field_int1`, `field_int2`, `field_float2`).
