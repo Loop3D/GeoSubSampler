@@ -4,7 +4,7 @@ How every GeoSubSampler tool calculates its result: the algorithms, formulas, co
 definitions and limits. For how to *use* the tools, see the [User Manual](UserManual.md).
 
 Everything here was checked against the code in [`GeoSubSampler.py`](../GeoSubSampler.py) and
-[`calcs/`](../calcs/) (version 0.5.1 plus the unreleased changes listed in the README changelog), and
+[`calcs/`](../calcs/) (version 0.5.1 plus the unreleased changes listed in the [changelog](../CHANGELOG.md)), and
 the behaviour was confirmed by running every tool on the example data of the User Manual. Where a function
 is named, it is in the file given in the section heading.
 
