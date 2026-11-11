@@ -27,8 +27,9 @@ class FaultStratOffset:
     * every point where the fault crosses a geological contact (polygon boundary) - these
       include the places where a fault meets a triple junction.  Where a fault runs along a
       contact, the middle of the shared section is used.
-    * for faults that meet no contact at all, the start, middle and end of the fault, as
-      before, so that every fault gets an answer.
+    * the start and end of every fault (skipped where a contact sample is already there);
+      for faults that meet no contact at all, the middle as well, so that every fault gets
+      an answer.
 
     Each fault then gets its maximum offset level plus how many samples were used and how
     many of them showed an offset.
@@ -106,7 +107,7 @@ class FaultStratOffset:
 
     # ------------------------------------------------------------------ sampling
     def get_sampling_points(self, faults_gdf, offset_distance=50, geology_gdf=None,
-                            crossing_offset=5.0, use_crossings=True):
+                            crossing_offset=5.0, use_crossings=True, sample_ends=True):
         """
         Create the sample locations on the faults and, at each, one point on each side.
 
@@ -119,6 +120,8 @@ class FaultStratOffset:
                            next to the contact
         use_crossings    : False reproduces the original sampling (start, middle and end of
                            every fault, nothing else)
+        sample_ends      : also sample the start and end of faults that meet contacts (skipped
+                           where a contact sample lies within ``crossing_offset`` of the end)
 
         Returns
         -------
@@ -153,9 +156,42 @@ class FaultStratOffset:
         c_after = np.clip(along + delta, 0.0, length[cf]) if len(cf) else along
         c_off = np.full(len(cf), float(crossing_offset))
 
-        # 2. fallback locations for faults that meet no contact
         has_contact = np.zeros(len(faults), dtype=bool)
         has_contact[cf] = True
+
+        # 1b. the two ends of faults that do meet contacts (unless a contact sample already
+        #     sits at that end), so the fault tips are tested too
+        if sample_ends and len(cf):
+            ends = np.flatnonzero(valid & has_contact)
+            lo = np.searchsorted(cf, ends, side="left")
+            hi = np.searchsorted(cf, ends, side="right") - 1
+            L = length[ends]
+            e_parts = []
+            for name, pos in (("start", 0.0), ("end", 1.0)):
+                if pos == 0.0:
+                    near = along[lo] <= delta[lo]
+                    b_, a_ = 0.0 * L, 0.01 * L
+                else:
+                    near = along[hi] >= L - delta[hi]
+                    b_, a_ = 0.99 * L, 1.0 * L
+                sel = ~near
+                p = shapely.line_interpolate_point(faults[ends[sel]], pos * L[sel])
+                e_parts.append((ends[sel], shapely.get_x(p), shapely.get_y(p),
+                                np.full(sel.sum(), name, dtype=object),
+                                b_[sel], a_[sel], pos * L[sel]))
+            e_f, e_x, e_y, e_k, e_b, e_a, e_al = (np.concatenate(v) for v in zip(*e_parts))
+            # merge with the contact samples, in order along each fault
+            cf = np.concatenate([cf, e_f]).astype(np.int64)
+            cx = np.concatenate([cx, e_x]); cy = np.concatenate([cy, e_y])
+            ckind = np.concatenate([ckind, e_k]).astype(object)
+            c_before = np.concatenate([c_before, e_b]); c_after = np.concatenate([c_after, e_a])
+            c_off = np.concatenate([c_off, np.full(len(e_f), float(offset_distance))])
+            along = np.concatenate([along, e_al])
+            order = np.lexsort((along, cf))
+            cf, cx, cy, ckind, c_before, c_after, c_off, along = (
+                v[order] for v in (cf, cx, cy, ckind, c_before, c_after, c_off, along))
+
+        # 2. fallback locations for faults that meet no contact
         fb = np.flatnonzero(valid & ~has_contact)
         ff, fx, fy, fkind, fbefore, fafter = [], [], [], [], [], []
         if len(fb):

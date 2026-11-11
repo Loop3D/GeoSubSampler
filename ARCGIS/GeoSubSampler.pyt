@@ -107,6 +107,14 @@ def _add_to_map(proj, entries, messages):
                 except Exception as exc:
                     messages.addWarningMessage(
                         f"Could not copy symbology to {os.path.basename(path)}: {exc}")
+            if entry.get("style"):
+                try:
+                    _style_by_field(proj, new_layer, entry["style"].get("field"),
+                                    bool(entry["style"].get("categorical", True)))
+                except Exception as exc:
+                    messages.addWarningMessage(
+                        f"Could not colour {os.path.basename(path)} by "
+                        f"{entry['style'].get('field')}: {exc}")
             try:
                 _move_into_group(m, new_layer, entry.get("group") or {"kind": "outputs"})
             except Exception as exc:
@@ -114,6 +122,61 @@ def _add_to_map(proj, entries, messages):
         except Exception as exc:
             messages.addWarningMessage(f"Could not add {path}: {exc}")
     return added
+
+
+def _first_ramp(proj, names):
+    """The first of the named colour ramps that exists in the project's styles (or None)."""
+    for name in names:
+        try:
+            ramps = proj.listColorRamps(name)
+            if ramps:
+                return ramps[0]
+        except Exception:
+            logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
+    return None
+
+
+def _style_by_field(proj, layer, field, categorical=True, width=1.5):
+    """
+    Colour a layer by a field (as the QGIS plugin does for the fault methods): one colour per
+    value (unique values) or a continuous ramp over 10 quantile classes (graduated colours).
+    Uses arcpy.mp symbology - no geoprocessing tool, so the layer is not locked.
+    Does nothing if the field is not in the layer.
+    """
+    if not field or field.lower() not in (f.name.lower() for f in arcpy.ListFields(layer)):
+        return
+    sym = layer.symbology
+    if not hasattr(sym, "updateRenderer"):
+        return
+    if categorical:
+        sym.updateRenderer("UniqueValueRenderer")
+        sym.renderer.fields = [field]
+        ramp = _first_ramp(proj, ["Paired (12 colors)", "Basic Random"])
+        if ramp is not None:
+            sym.renderer.colorRamp = ramp
+        try:
+            for grp in sym.renderer.groups:
+                for itm in grp.items:
+                    itm.symbol.size = width
+        except Exception:
+            logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
+    else:
+        sym.updateRenderer("GraduatedColorsRenderer")
+        sym.renderer.classificationField = field
+        try:
+            sym.renderer.classificationMethod = "Quantile"
+            sym.renderer.breakCount = 10
+        except Exception:
+            logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
+        ramp = _first_ramp(proj, ["Viridis", "Spectral (Continuous)", "Spectral (5 Classes)"])
+        if ramp is not None:
+            sym.renderer.colorRamp = ramp
+        try:
+            for brk in sym.renderer.classBreaks:
+                brk.symbol.size = width
+        except Exception:
+            logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
+    layer.symbology = sym
 
 
 # ------------------------------------------------------------------ layer groups (as in the QGIS plugin)

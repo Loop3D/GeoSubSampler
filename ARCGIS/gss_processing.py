@@ -165,7 +165,7 @@ class GSSProcessor:
         self._meta_sources = []
         self._run_label = run_label
         self._log = log
-        self._add_output = add_output or (lambda path, like, group=None: None)
+        self._add_output = add_output or (lambda path, like, group=None, style=None: None)
         self._layer_group = None     # where the next result goes in the map (see add_output)
         self._fallback = fallback_dir
         self._field_maps = {}        # resolved shp path -> {original column: shapefile column}
@@ -337,7 +337,9 @@ class GSSProcessor:
         self.warn(f"Result saved to {alt} instead.")
         return alt
 
-    def _emit(self, path, like_rec):
+    def _emit(self, path, like_rec, style=None):
+        """style: optional {"field": name, "categorical": bool} - colour the layer by that field
+        in the map (one colour per value, or a continuous colour ramp)."""
         if not os.path.exists(path):
             self.warn(f"Expected output was not produced: {path}")
             return
@@ -347,7 +349,10 @@ class GSSProcessor:
             if like_rec is not None and not sources:
                 sources = [self.resolved_source(like_rec)]
             write_sgt_metadata(path, sources or None, self._meta_operation, self._meta_params, _plugin_version())
-        self._add_output(path, like_rec["name"] if like_rec else None, self._layer_group)
+        if style:
+            self._add_output(path, like_rec["name"] if like_rec else None, self._layer_group, style)
+        else:
+            self._add_output(path, like_rec["name"] if like_rec else None, self._layer_group)
 
     # ------------------------------------------------------------------ points
     def _setup_points(self, rec, dip_col, dipdir_col, is_dipdir, check_fields=True):
@@ -620,7 +625,7 @@ class GSSProcessor:
         if geographic:
             dist = dist / DEG_PER_M_INV
 
-        gdf = None
+        gdf_input = None
         n_steps = len(np.arange(min_scale, max_scale + 0.001, inc))
         run_params = self._meta_params
         for step_no, up_scale in enumerate(np.arange(min_scale, max_scale + 0.001, inc), 1):
@@ -630,8 +635,10 @@ class GSSProcessor:
             if geographic:
                 min_area = min_area / (DEG_PER_M_INV ** 2)
             new_path = self._make_output_path(poly_rec, "_min_area" + ("" if n_steps == 1 else f"_{step_no}"))
-            if gdf is None:
-                gdf = gpd.read_file(self.resolved_source(poly_rec))
+            if gdf_input is None:                # every step of a series starts from the input
+                gdf_input = gpd.read_file(self.resolved_source(poly_rec))
+            gdf = gdf_input
+            helper_columns = []
 
             if dyke_field and not dyke_codes:
                 self.warn("Ignore field is set but the Ignore Codes box is empty - "
@@ -643,6 +650,7 @@ class GSSProcessor:
                     strat3=strat[2] or None, strat4=strat[3] or None,
                     lithoname=lithoname or None)
                 gdf = tri.triangulate_polygons(target_ids=dyke_codes)
+                helper_columns = getattr(tri, 'helper_columns', [])
                 self._report_ignore_codes(tri, gdf)
 
             sub = StructuralPolygonSubSampler(gdf)
@@ -651,6 +659,8 @@ class GSSProcessor:
                 strat1=strat[0] or None, strat2=strat[1] or None,
                 strat3=strat[2] or None, strat4=strat[3] or None,
                 lithoname=lithoname or None)
+            if helper_columns:                   # the triangulation's bookkeeping columns
+                out = _triangulator_class().drop_helper_columns(out, helper_columns)
             new_path = self._save_gdf(out, new_path)
             self._emit(new_path, poly_rec)
 
@@ -677,19 +687,19 @@ class GSSProcessor:
     def simplify_map(self, poly_rec, fault_rec, area_tolerance):
         if poly_rec is None or fault_rec is None:
             raise GSSError("Map simplification: select both a polygon layer and a fault layer.")
-        from calcs.PolygonSimplification import vector_simplify_file_two_stage   # (loaded when needed)
+        from calcs.PolygonSimplification import (vector_simplify_file_two_stage,   # (loaded when needed)
+                                                 simplified_fault_path)
         area_tolerance = int(area_tolerance)
         self._meta_params["method"] = "modified_visvalingam_whyatt"
         input_file = self.resolved_source(poly_rec)
         fault_file = self.resolved_source(fault_rec)
         output_file = self._make_output_path(poly_rec, "_MVW")
-        # the faults are written beside the polygon output, as <fault name>_sn_si_<tolerance>.shp
-        fault_out = os.path.join(os.path.dirname(output_file),
-                                 os.path.splitext(os.path.basename(fault_file))[0] + "_sn_si.shp")
-        vector_simplify_file_two_stage(
+        result = vector_simplify_file_two_stage(
             input_file=input_file, output_file=output_file,
             method="modified_visvalingam_whyatt", threshold=area_tolerance,
             fault_file=fault_file)
+        # the faults are written beside the polygon output, as <fault name>_sn_si_<tolerance>.shp
+        fault_out = simplified_fault_path(result, output_file, fault_file, area_tolerance)
         self._emit(output_file, poly_rec)
         self._emit(fault_out, fault_rec)
 
@@ -821,7 +831,7 @@ class GSSProcessor:
                 src, output_path=out, length_field="line_len",
                 unit="degrees" if fault_rec.get("geographic") else "meters",
                 force_projection=None)
-            self._emit(out, fault_rec)
+            self._emit(out, fault_rec, style={"field": "line_len", "categorical": False})
 
         elif method == "graph":
             from calcs.FaultsGraph import FaultsGraph       # (networkx: loaded when needed)
@@ -829,7 +839,8 @@ class GSSProcessor:
             FaultsGraph().CalcFaultsGraph(src, output_dir=run_dir)
             directory, filename = os.path.split(src)
             self._emit(os.path.join(run_dir, "simplified_full_" +
-                                    filename.replace(".shp", "_edges.shp")), fault_rec)
+                                    filename.replace(".shp", "_edges.shp")), fault_rec,
+                       style={"field": "edge_type", "categorical": True})
 
         elif method == "strat_offset":
             if poly_rec is None:
@@ -841,7 +852,7 @@ class GSSProcessor:
             self._meta_params["offset_distance_m"] = 50
             FaultStratOffset().CalcFaultStratOffset(
                 src, self.resolved_source(poly_rec), out, cols, offset_distance=50)
-            self._emit(out, fault_rec)
+            self._emit(out, fault_rec, style={"field": "max_off_ds", "categorical": True})
             # the points where the offset was read, with their offset level and the units either side
             self._emit(out.replace(".shp", "_samples.shp"), None)
 
@@ -856,7 +867,8 @@ class GSSProcessor:
                 raise GSSError("Could not cluster faults - too few faults with distinct "
                                "orientations.")
             self._emit(os.path.join(os.path.dirname(out_az),
-                                    safe_name + "_fault_clusters.shp"), fault_rec)
+                                    safe_name + "_fault_clusters.shp"), fault_rec,
+                       style={"field": "cluster", "categorical": True})
         else:
             raise GSSError(f"Unknown fault method '{method}'.")
 

@@ -49,6 +49,18 @@ MIT License.
 
 ## Changelog
 
+**Unreleased**
+- Fault results (Length, Graph, Strat Offset, Clusters) are coloured by their new attribute, in QGIS and ArcGIS Pro.
+- Strat Offset also samples the start and end of faults that cross contacts.
+- Simplify Map adds its simplified faults (`<faults>_sn_si_<tolerance>`) to the map; they were written but not loaded.
+- Rescale Map / T&P: the Tolerance now lets a small polygon that touches nothing merge into a polygon within
+  that distance, filling the gap; maps whose polygons touch are unaffected.
+- T&P count merge uses the same priority order as Rescale Map (Priority 1-4, then 5).
+- Grid methods write dip and dip direction / strike rounded to 0.1 degree instead of truncated to whole degrees.
+- Ignore-code triangulation no longer leaves `rec_*`, `tri_id`, `src_*`, `orig_id`, `area` or random `field_*`
+  columns in the output; each step of a Rescale Map series triangulates the original layer.
+- T&P Increment tooltip corrected (steps are 1 - n x increment).
+
 **0.5.1**
 - Every result file gets a metadata file beside it (`<file>.shp.sgt.xml`, the same format as SGTool's), recording when and how it
   was made, the parameters and the files it was made from. SGTool can read and show these, and GeoSubSampler can show

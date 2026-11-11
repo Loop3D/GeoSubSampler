@@ -265,6 +265,16 @@ class SubsamplingEngine:
         return (count, float(kappa), float(beta))
 
     @staticmethod
+    def _fmt_dip(value):
+        """Dip for a CSV field, rounded to 0.1 degree."""
+        return f"{round(float(value), 1):.1f}"
+
+    @staticmethod
+    def _fmt_dipdir(value):
+        """Dip direction for a CSV field, rounded to 0.1 degree and kept in 0-360 (360.0 -> 0.0)."""
+        return f"{round(float(value), 1) % 360.0:.1f}"
+
+    @staticmethod
     def _fmt_kent(value):
         """Kent parameter for a CSV field: 2 decimals, or -998 when undefined."""
         return f"{value:.2f}" if np.isfinite(value) else "-998"
@@ -466,9 +476,9 @@ class SubsamplingEngine:
                     dip_val, dipdir_val = self._orientation_from_sums(
                         sums[k, 0], sums[k, 1], sums[k, 2], int(counts[k]))
                     dip_str    = ('NaN' if math.isnan(dip_val)
-                                  else str(int(dip_val)))
+                                  else self._fmt_dip(dip_val))
                     dipdir_str = ('NaN' if math.isnan(dipdir_val)
-                                  else str(int(dipdir_val)))
+                                  else self._fmt_dipdir(dipdir_val))
                     out.write(f"{centx:.8f},{centy:.8f},"
                               f"{dip_str},{dipdir_str},{int(counts[k])}\n")
         return file
@@ -568,7 +578,7 @@ class SubsamplingEngine:
                     centx = float(e[s:t_].mean())
                     centy = float(nn[s:t_].mean())
                     out.write(f"{centx:.8f},{centy:.8f},"
-                              f"{int(dip2)},{int(dipdir2)},{int(counts[k])},"
+                              f"{self._fmt_dip(dip2)},{self._fmt_dipdir(dipdir2)},{int(counts[k])},"
                               f"{self._fmt_kent(kappa[k])},{self._fmt_kent(beta[k])}\n")
         return file
 
@@ -818,7 +828,7 @@ class SubsamplingEngine:
                 centx = float(e[s:t_][keep].mean())
                 centy = float(nn[s:t_][keep].mean())
                 first = labels[s + removed[0]] if removed else -1
-                out.write(f"{centx:.8f},{centy:.8f},{int(dip_f)},{int(dipdir_f)},"
+                out.write(f"{centx:.8f},{centy:.8f},{self._fmt_dip(dip_f)},{self._fmt_dipdir(dipdir_f)},"
                           f"{len(Xf)},{self._fmt_kent(kappa)},"
                           f"{self._fmt_kent(beta)},"
                           f"{first},"
@@ -936,7 +946,7 @@ class SubsamplingEngine:
                 # Mean position of the retained points, not the cell centre
                 centx = float(e[s:t_][keep].mean())
                 centy = float(nn[s:t_][keep].mean())
-                out.write(f"{centx:.8f},{centy:.8f},{int(dip_f)},{int(dipdir_f)},"
+                out.write(f"{centx:.8f},{centy:.8f},{self._fmt_dip(dip_f)},{self._fmt_dipdir(dipdir_f)},"
                           f"{len(Xf)},{self._fmt_kent(kappa_f)},"
                           f"{self._fmt_kent(beta_f)},{n_removed}\n")
 

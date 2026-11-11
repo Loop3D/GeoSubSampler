@@ -4,7 +4,7 @@ How every GeoSubSampler tool calculates its result: the algorithms, formulas, co
 definitions and limits. For how to *use* the tools, see the [User Manual](UserManual.md).
 
 Everything here was checked against the code in [`GeoSubSampler.py`](../GeoSubSampler.py) and
-[`calcs/`](../calcs/) (version 0.5.1 plus the changes made in the installed copy as of November 2026), and
+[`calcs/`](../calcs/) (version 0.5.1 plus the unreleased changes listed in the README changelog), and
 the behaviour was confirmed by running every tool on the example data of the User Manual. Where a function
 is named, it is in the file given in the section heading.
 
@@ -19,7 +19,7 @@ is named, it is in the file given in the section heading.
 7. [Töpfer & Pillewizer scaling](#7-töpfer--pillewizer-scaling)
 8. [Metadata](#8-metadata)
 9. [Units and coordinate systems](#9-units-and-coordinate-systems)
-10. [Known limitations](#10-known-limitations)
+10. [Known issues and caveats](#10-known-issues-and-caveats)
 11. [References](#11-references)
 
 ---
@@ -293,8 +293,9 @@ depend on which strike convention (right- or left-hand) the data use.
 
 The mean orientation of N measurements is the normalised resultant: x̄ = (Σl, Σm, Σn)/N,
 R̄ = |x̄| (the mean resultant length, 0 to 1), mean direction ĝ = x̄ / R̄. If R̄ < 1e-12 (vectors cancel)
-there is no mean and the cell is dropped. Output dip and dip direction are **truncated to whole degrees**
-(`int()`).
+there is no mean and the cell is dropped. Output dip and dip direction are **rounded to 0.1°**
+(`_fmt_dip`, `_fmt_dipdir`; a dip direction that rounds to 360.0 is written as 0.0). Strike restored from
+dip direction (3.2) is rounded to 0.1° as well.
 
 ### 3.4 Kent statistics
 
@@ -545,11 +546,17 @@ D = 0, inc, 2·inc, ... up to the threshold, each step starting from the origina
    merging into the same target are dissolved into it in one go (`unary_union`, repaired with `buffer(0)`
    if invalid), the target keeps its own attributes, and the merged polygons' `inherit` values are
    appended to the target's (overflowing into `inherit1`, `inherit2` ... at 254 characters).
-5. Invalid results are repaired; zero-area polygons are dropped. Polygons still below A that touch nothing
-   are kept.
+5. **Near neighbours (Tolerance t).** A small polygon that touches no other polygon looks instead at the
+   polygons within distance t (STRtree `dwithin`), with the same preference order; the "shared boundary"
+   is then the length of its boundary lying within t of the candidate's boundary. When it is merged, the
+   gap between the two is filled with the area within t of both (buffer(t) ∩ buffer(t)), minus any third
+   polygon, so the result is one piece and nothing overlaps. Polygons that touch a neighbour never use
+   this, so on a topologically clean map (e.g. after Fix Map) the Tolerance changes nothing. It is skipped
+   for t ≤ 1e-6 (the default when the function is called without one).
+6. Invalid results are repaired; zero-area polygons are dropped. Polygons still below A with no neighbour
+   within t are kept.
 
-The **Tolerance** is used only as a buffer distance if the direct shared-boundary calculation fails (and
-is passed to the triangulator); in normal runs it does not change the result.
+The Tolerance is also the fallback buffer distance if the direct shared-boundary calculation fails.
 
 **Ignore codes.** Before merging, every polygon whose Ignore Field value matches one of the codes
 (case- and space-insensitive) **and** whose area is below A is triangulated: Delaunay triangulation of
@@ -558,7 +565,11 @@ polygons with holes). Each triangle is given a unique value in every priority fi
 a neighbour by attribute, and the merge step prefers real neighbours over triangles. Each triangle
 therefore joins the unit it shares most boundary with, and a long dyke is shared out between the units on
 either side of it instead of being given whole to one neighbour. Polygons above A are left as they are. The
-summary (codes not found, matched, triangulated) is shown in the message bar.
+summary (codes not found, matched, triangulated) is shown in the message bar. The bookkeeping columns the
+triangulation adds while merging (`rec_id`, `rec_type`, `tri_id`, `src_id`, `src_index`, `orig_id`; listed
+in `PolygonTriangulator.helper_columns`) are removed from the result (`drop_helper_columns`), so the output
+has the input's fields plus `primaryid` and `inherit*`. Each triangle has its own `primaryid`, so the
+`inherit` lists of polygons that absorb a triangulated dyke can be long.
 
 ### 6.2 Simplify Map
 
@@ -643,7 +654,8 @@ original is still ON × rₖ) (`scale_lines_tp`). Missing attributes are first c
 2. **Bulk merge**: Rescale Map (6.1) with the area threshold set just above the (N − TN)-th smallest area,
    so that exactly N − TN polygons start below it.
 3. **Count merge** (`_merge_to_count`), if still above TN: repeatedly dissolve the single smallest polygon
-   into the touching neighbour chosen by attribute match in the order **Priority 5, 1, 2, 3, 4**, then
+   into the touching neighbour chosen by attribute match in the order **Priority 1, 2, 3, 4, 5** (as Rescale
+   Map), then
    longest shared boundary (an isolated polygon goes to the nearest centroid among its bounding-box
    candidates).
 
@@ -709,18 +721,36 @@ A projected CRS in metres is strongly recommended.
 
 ---
 
-## 10. Known limitations
+## 10. Known issues and caveats
 
-- **Simplify Map** writes `<fault>_sn_si_<tolerance>.shp` but tries to load `<fault>_sn_si.shp`, so the
-  simplified faults are not added to the map.
-- The **T&P Increment** tooltip describes steps (1 − i)ⁿ; the code uses 1 − n·i.
-- T&P's final count merge tries Priority 5 first; Rescale Map tries it last (6.1, 7).
-- Merge Segments does not keep attributes.
-- Fault Graph connects faults only at shared vertices; run Fix Map first.
-- Grid methods truncate orientations to whole degrees.
-- Ignore-code triangulation adds `rec_*`, `tri_id`, `src_*`, `orig_id`, `area` and filler `field_*`
-  columns (random values on triangles) to the output.
-- Rescale Map's Tolerance has no effect in normal runs (6.1).
+The User Manual lists these in plain terms ([Known issues and caveats](UserManual.md#10-tips-messages-known-issues-and-caveats)).
+
+### Known issues
+
+| Issue | Where | Effect |
+|---|---|---|
+| Attributes not kept | Merge Segments (5.1) | `process_shapefile` builds the output from the merged geometries only. |
+| Long `inherit` lists | Rescale Map / T&P with ignore codes (6.1) | Each triangle has its own `primaryid`, which is appended to the absorbing polygon's `inherit` fields. |
+| Triangles counted as polygons | T&P polygons (7) | N for the bulk-merge threshold includes the triangles; the count merge still reaches TN. |
+
+### Caveats
+
+| Topic | Detail | Section |
+|---|---|---|
+| Input read from disk | Unsaved edits are not seen; GeoPackage layers are exported with 10-character field names. | 1.1 |
+| Units | 1o Distance, Merge Dist. and Simplify Area Tolerance are in layer units (degrees if geographic); other conversions are approximate (110 000 m/degree for grids and Rescale; 111 139 cos(lat) for `line_len`). | 9 |
+| Fix Map | Can remove features (duplicates, covered polygons, collapsed slivers); resolves gaps and overlaps by size and boundary length, not geology; chords can lie further than the tolerance from the original line. | 2.1 |
+| Densify | Fault-fault crossings are not noded (`line_crossings=False`). | 2.3 |
+| Grid methods | Only computed fields are written; points are at the mean position of the measurements; κ can be very large for near-identical measurements. | 3.4, 4.3 |
+| Point targets | Auto-fit and T&P grid searches stop within ±15%, typically just under the target. | 4.7, 7 |
+| Stochastic | Seed from the clock, so runs differ (the seed is in the metadata). | 4.2 |
+| Fault Graph | Faults connect only at exactly shared vertices (10-decimal rounding); run Fix Map first. | 5.3 |
+| Strat Offset | First containing polygon used if polygons overlap; side points outside all polygons give -1; side steps fixed at 5 m and 50 m. | 5.4 |
+| Orientation Clusters | End-to-end azimuth ignores curvature; T&P computes k = 2-7 only. | 5.5 |
+| Rescale Map Tolerance | Only for small polygons touching nothing; the gap filled is buffer(t) ∩ buffer(t) minus other polygons. | 6.1 |
+| Simplify Map | Contact pinning uses a field named `CODE` (skipped if absent); faults are cut into arcs, so stored vertex counts can rise. | 6.2 |
+| T&P | Points from the original at each step, faults and polygons chained; Min kappa, Iterative and Auto-fit are ignored. | 7 |
+| ArcGIS Pro | Same calculation code, not re-run for these manuals. | — |
 
 ---
 

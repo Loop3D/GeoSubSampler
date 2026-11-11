@@ -25,7 +25,7 @@ This manual explains how to *use* each tool. How each result is *calculated* is 
 7. [Faults tab](#7-faults-tab)
 8. [Polygons tab: Rescale, Simplify, Töpfer & Pillewizer](#8-polygons-tab)
 9. [Results, file names and metadata](#9-results-file-names-and-metadata)
-10. [Tips, messages and known issues](#10-tips-messages-and-known-issues)
+10. [Tips, messages, known issues and caveats](#10-tips-messages-known-issues-and-caveats)
 
 ---
 
@@ -232,7 +232,7 @@ have probably been swapped: nothing is processed and a message says so.
 The area is divided into square cells of **Grid Size (m)** (each method has its own box; default
 5 000 m), starting at the lower-left corner of the points. Each occupied cell gives one point, placed at
 the **mean position** of the measurements used (not at the cell centre), with their vector-mean
-orientation (rounded down to whole degrees) and these fields:
+orientation (rounded to 0.1°) and these fields:
 
 | Field | Meaning |
 |---|---|
@@ -353,7 +353,7 @@ matches, the one with the longest shared boundary.
 | Setting | Meaning |
 |---|---|
 | **Diameter Threshold (km)** | Polygons smaller than a circle of this diameter are merged; holes smaller than that are filled. Default 5. |
-| **Tolerance (m)** | Only used as a fallback when a shared boundary cannot be measured directly, and by the triangulation of ignore codes. Default 1. |
+| **Tolerance (m)** | A small polygon that touches no other polygon (for example one separated from its neighbours by a sliver gap) may merge into a polygon within this distance, chosen by the same rules; the gap between them is filled. Polygons that do touch are not affected. Default 1. |
 | **Ignore Field** / **Ignore Codes** | Polygons whose Ignore Field holds one of these comma-separated codes (e.g. dykes, alluvium) are cut into triangles before merging, so that their area is shared between the units on either side instead of being given whole to one neighbour. Only those below the size threshold are cut. |
 | **Series**, **Increment (km)** | Make one map per diameter from 0 up to the threshold, in steps of the increment. Each step starts from the original layer. |
 
@@ -364,7 +364,7 @@ Example: 1 121 polygons -> 187 at 2 km and 77 at 5 km (3.5 s).
 Outputs `<layer>_min_area` (a series: `_min_area_1`, `_2`, ...; step 1 is the 0 km diameter, i.e. unchanged).
 Each output has `primaryid` (the polygon's original row) and `inherit` (the `primaryid`s of everything
 merged into it, continued in `inherit1`, `inherit2` ... when longer than 254 characters).
-A small polygon with no neighbour at all is kept.
+A small polygon with no neighbour within the tolerance is kept.
 
 ### Simplify Map
 
@@ -379,10 +379,8 @@ Example (10 000 m², 21-28 s): polygon vertices 143 561 -> 51 557.
 
 ![Simplify Map](images/polygons_simplify.png)
 
-Outputs: `<polygon layer>_MVW`, and the simplified faults `<fault layer>_sn_si_<tolerance>`. **Known issue:**
-the simplified faults are written but not added to the map ("Failed to load result layer
-'..._sn_si'"); add `<fault layer>_sn_si_<tolerance>.shp` from the run folder by hand. The run folder also
-holds the intermediate `<polygon layer>_topo_fixed` and `<fault layer>_sn` files.
+Outputs: `<polygon layer>_MVW` and the simplified faults `<fault layer>_sn_si_<tolerance>`, both added to
+the map. The run folder also holds the intermediate `<polygon layer>_topo_fixed` and `<fault layer>_sn` files.
 
 ### Töpfer & Pillewizer scaling
 
@@ -477,14 +475,12 @@ The **History** tab shows it as a table; the **XML** tab shows the file.
 
 ---
 
-## 10. Tips, messages and known issues
+## 10. Tips, messages, known issues and caveats
 
 **Good practice**
 
 - Run **Fix Map** before the fault tools and Simplify Map, and check its report.
-- Use a projected CRS in metres. Grid sizes and the Rescale tolerance are converted from metres to
-  degrees approximately for geographic data, but **1o Sampling Distance** and **Merge Segments Dist.** are
-  used in layer units as they are.
+- Use a projected CRS in metres (see [Caveats](#caveats)).
 - Set the Geology Polygon Priorities before Rescale Map, T&P and Strat Offset.
 - Large maps: Fix Map took about 3 minutes on a 1 900-polygon / 670 000-vertex map and about 27 minutes on
   a 3.9-million-vertex map. Follow it in the progress file.
@@ -503,15 +499,67 @@ The **History** tab shows it as a table; the **XML** tab shows the file.
 | *Sorry, only layers saved to disk ... can be processed!* | save the layer as a shapefile or GeoPackage |
 | *The polygon and fault layers are in different coordinate systems* | reproject one of them (Fix Map, Densify) |
 
-**Known issues** (found while checking this manual against the code)
+### Known issues
 
-- Simplify Map does not add its simplified faults to the map (see [Simplify Map](#simplify-map)).
-- The tooltip of the T&P **Increment** box describes geometric steps, (1 - increment)^n; the steps are
-  actually equal, 1 - n × increment, as described above.
-- Merge Segments drops the attributes of the faults.
-- In T&P polygon scaling, the last few merges needed to hit the target exactly (after the bulk merge) try
-  the lithology field (Priority 5) **before** Priority 1-4, whereas Rescale Map tries it last. In the
-  example this affected up to 6 polygons per step.
-- With Ignore Codes, the output polygons get extra columns from the triangulation (`rec_id`, `rec_type`,
-  `tri_id`, `src_id`, `src_index`, `orig_id`, `area`, and filler columns `field_str`, `field_float`,
-  `field_int1`, `field_int2`, `field_float2`).
+These are behaviours that are not what you would want, and may be changed:
+
+- **Merge Segments drops the fault attributes.** The merged layer has geometry only; join attributes back
+  yourself if you need them.
+- **Long `inherit` lists with Ignore Codes.** Every triangle of a triangulated polygon has its own
+  `primaryid`, so the polygons that absorb a dyke can get many `inherit1`, `inherit2` ... columns.
+- **T&P counts triangles.** With Ignore Codes, the triangles count as polygons when T&P works out how many
+  to merge in its first pass; the second pass still reaches the target count.
+
+### Caveats
+
+Things that work as designed but are easy to trip over:
+
+**Input**
+
+- Tools read the layer **files**, not QGIS's in-memory features: save your edits first. A GeoPackage layer
+  is exported once to a shapefile beside it, and field names longer than 10 characters are shortened.
+- Several settings are used in **layer units**, so in a geographic CRS they are in degrees: 1o Sampling
+  **Distance**, Merge Segments **Dist.** and Simplify Map **Area Tolerance**. Grid sizes and the Rescale
+  Map settings are converted with 110 km per degree (in both directions), and fault lengths with
+  111 km × cos(latitude), which is exact only for east-west faults. Use a projected CRS in metres.
+
+**Clean**
+
+- **Fix Map can remove features**: duplicates, polygons completely covered by smaller ones, and polygons or
+  faults narrower than the tolerance. They are listed by index in the report. Gaps and overlaps are resolved
+  by size and shared boundary length, not by geology, and where several vertices snap to the same nodes a
+  line can end up slightly further than the tolerance from where it was (the report says how far).
+- **Densify Nodes** does not add nodes where two faults cross each other; Fix Map does.
+
+**Points**
+
+- **Grid methods** keep only the averaged orientation and their statistics, not the other input fields,
+  and place each point at the mean position of the measurements in its cell. Near-identical measurements give
+  very large kappa values (10⁸ in the example).
+- **Auto-fit** and T&P's grid search stop once they are within ±15% of the target, so the count is often a
+  little under it (10-12% under in the example).
+- **Stochastic** uses a new random seed each run (recorded in the metadata), so two runs differ.
+
+**Faults**
+
+- **Graph then Length** connects faults only where they share a vertex. Run Fix Map first, or crossing
+  faults are treated as separate.
+- **Strat Offset** reads the first polygon containing each side point; overlapping polygons give an
+  arbitrary answer. Side points that fall outside every polygon count as the map edge (-1). The side steps
+  (5 m at contacts, 50 m at fault ends) are fixed.
+- **Orientation Clusters** uses the straight line between a fault's two ends, so it ignores curvature. When T&P
+  has to compute clusters itself, it tries only 2 to 7 clusters (the tool tries 2 to 30).
+
+**Polygons**
+
+- **Rescale Map Tolerance** only affects small polygons that touch no other polygon (6.1 in the Reference
+  Manual). The gap filled when such a polygon merges is the area within the tolerance of both polygons.
+- **Simplify Map** keeps one shared vertex for every pair of touching polygons with different values in a
+  field called `CODE`; if the layer has no `CODE` field, that safeguard is skipped. Faults are cut into arcs
+  at junctions, so the simplified fault file can have more stored vertices than the input.
+- **T&P** reduces points from the original points at every step, but faults and polygons from the previous
+  step. It ignores Min kappa, Iterative and Auto-fit.
+
+**ArcGIS Pro**
+
+- The ArcGIS Pro window uses the same calculation code but was not re-run for this manual.
