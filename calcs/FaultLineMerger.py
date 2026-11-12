@@ -314,21 +314,22 @@ class FaultLineMerger:
         coords1 = list(line1.coords)
         coords2 = list(line2.coords)
 
-        # Determine the correct order and orientation
+        # Put the two lines head to tail: first runs into the join, second runs away from it
         if endpoint1 == "end" and endpoint2 == "start":
-            # line1_end -> line2_start: concatenate normally
-            merged_coords = coords1 + coords2[1:]  # Skip duplicate point
+            first, second = coords1, coords2
         elif endpoint1 == "end" and endpoint2 == "end":
-            # line1_end -> line2_end: reverse line2
-            merged_coords = coords1 + coords2[-2::-1]  # Reverse line2, skip duplicate
+            first, second = coords1, coords2[::-1]
         elif endpoint1 == "start" and endpoint2 == "start":
-            # line1_start -> line2_start: reverse line1
-            merged_coords = coords1[::-1] + coords2[1:]  # Reverse line1, skip duplicate
+            first, second = coords1[::-1], coords2
         else:  # endpoint1 == 'start' and endpoint2 == 'end'
-            # line1_start -> line2_end: reverse both or reorder
-            merged_coords = coords2 + coords1[1:]  # line2 + line1, skip duplicate
+            first, second = coords2, coords1
 
-        return LineString(merged_coords)
+        # The two ends can be up to distance_tolerance apart. Only an end that is exactly the same
+        # point is dropped as a duplicate; otherwise both ends are kept and the gap is bridged by a
+        # straight segment, so no vertex of either line moves or disappears.
+        if tuple(first[-1]) == tuple(second[0]):
+            second = second[1:]
+        return LineString(first + second)
 
     def merge_fault_lines(self, lines: List[LineString]) -> List[LineString]:
         """

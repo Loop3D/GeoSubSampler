@@ -20,7 +20,7 @@ This manual explains how to *use* each tool. How each result is *calculated* is 
 2. [The example data](#2-the-example-data)
 3. [Quick start](#3-quick-start)
 4. [The dock](#4-the-dock)
-5. [Clean tab: Fix Map, Repair, Densify](#5-clean-tab)
+5. [Clean tab: Fix Map, Repair, Densify, Thin](#5-clean-tab)
 6. [Points tab: subsampling orientations](#6-points-tab)
 7. [Faults tab](#7-faults-tab)
 8. [Polygons tab: Rescale, Simplify, Töpfer & Pillewizer](#8-polygons-tab)
@@ -199,6 +199,36 @@ same node in all of them.
 ![Densify before and after](images/densify_before_after.png)
 
 Outputs are `<layer>_dense` for each selected layer.
+
+### Thin Nodes
+
+The opposite of Densify: removes nodes that are closer together than a chosen distance, and keeps the
+layers consistent. A node on a boundary shared by two polygons, or followed by a fault, is removed from
+all of them at once, so the boundary and the fault stay on top of each other.
+
+| Setting | Meaning |
+|---|---|
+| **Min Node Spacing (m)** | A node closer than this to one of its neighbouring nodes is removed, where allowed. Default 50 m. |
+
+A node is **never** removed if it is:
+
+- a triple junction (shared by three or more polygons);
+- a place where a fault meets, leaves or crosses a polygon boundary or another fault;
+- the end of a line;
+- a point where a polygon touches itself.
+
+A node is also kept if removing it would make a boundary or fault **cross** another one (or itself), or
+would cut off another node, so that a feature would end up on the wrong side of a boundary. Rings are never
+reduced below three nodes. The message at the end says how many close nodes were kept for this reason.
+
+Ordinary nodes that are not shared (along the map edge, or on a fault inside a polygon) are thinned by the
+same rule. Thinning only removes nodes, so it does not move any node, but a boundary can be straightened
+across a bend narrower than the spacing.
+
+Run **Fix Map** first: only nodes that are exactly shared (to 1 µm) are treated as shared.
+
+Outputs are `<layer>_thin` for each selected layer. In QGIS each round's progress is printed in the Python
+console; in ArcGIS Pro it goes to the log.
 
 ---
 
@@ -462,6 +492,7 @@ like their input (fault attribute tools colour by the new attribute instead).
 | Fix Map | `Fix_map_...` | `<layer>_fixed`, `<layer>_fixed_report.txt`, `<layer>_fixed_progress.txt` |
 | Repair | `Repair_polygons_...` | `<layer>_valid` |
 | Densify Nodes | `Densify_nodes_...` | `<layer>_dense` |
+| Thin Nodes | `Thin_nodes_...` | `<layer>_thin` |
 | Point methods | `Point_subsampling_...` | `<layer>_stochastic`, `_grid_cell_kent`, `_grid_cell_kentOutlier(Iter)`, `_grid_cell_carmichael`, `_first_order`, `_ignored_points_report.txt` |
 | Merge Segments | `Fault_segment_merging_...` | `<layer>_merged` |
 | Process Faults | `Fault_processing_...` | `<layer>_length`, `simplified_full_<layer>_edges/_nodes`, `<layer>_stratOffset(_samples)`, `<layer>_fault_clusters`, `<layer>_endpt_az` |
@@ -529,7 +560,8 @@ Things that work as designed but are easy to trip over:
 **Input**
 
 - Tools read the layer **files**, not QGIS's in-memory features: save your edits first. A GeoPackage layer
-  is exported once to a shapefile beside it, and field names longer than 10 characters are shortened.
+  is exported to a shapefile beside it (again whenever the GeoPackage has changed), and field names longer
+  than 10 characters are shortened.
 - Several settings are used in **layer units**, so in a geographic CRS they are in degrees: 1o Sampling
   **Distance**, Merge Segments **Dist.** and Simplify Map **Area Tolerance**. Grid sizes and the Rescale
   Map settings are converted with 110 km per degree (in both directions), and fault lengths with
@@ -542,6 +574,9 @@ Things that work as designed but are easy to trip over:
   by size and shared boundary length, not by geology, and where several vertices snap to the same nodes a
   line can end up slightly further than the tolerance from where it was (the report says how far).
 - **Densify Nodes** does not add nodes where two faults cross each other; Fix Map does.
+- **Thin Nodes** treats nodes as shared only if they coincide to within 1 µm, so run Fix Map first. It
+  removes nodes by distance only, so it can straighten a bend narrower than the spacing (it never makes
+  lines cross).
 
 **Points**
 
