@@ -81,6 +81,17 @@ All three are in GDA94 / MGA zone 50 (EPSG:28350), so all distances are in metre
 
 Run times quoted below are for this data on a desktop PC.
 
+### Getting the data
+
+The data used in the examples in this manual can be downloaded as a zip file:
+[WA.zip](https://tectonique.net/GeoSubSampler/WA.zip).
+
+These layers are clipped from the original Geological Survey of Western Australia datasets, which are
+described in these metadata statements (XML):
+
+- [1:100 000 Interpreted Bedrock Geology (GDA2020)](https://warsydprdstadasc.blob.core.windows.net/downloads/Metadata_Statements/XML/METADATA_GEOLOGY_100k_InterpretedBedrockGeology_GDA2020.xml)
+- [WAROX field observations (GDA2020)](https://warsydprdstadasc.blob.core.windows.net/downloads/Metadata_Statements/XML/METADATA_WAROX_GDA2020.xml)
+
 ---
 
 ## 3. Quick start
