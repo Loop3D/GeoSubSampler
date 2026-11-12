@@ -216,7 +216,7 @@ class App(tk.Tk):
         self._build_priorities(body)
         self.tabs = ttk.Notebook(body)
         self.tabs.pack(fill="x", padx=6, pady=(4, 2))
-        for title, builders in (("Clean", (self._build_fixmap, self._build_densify)),
+        for title, builders in (("Clean", (self._build_fixmap, self._build_densify, self._build_thin)),
                                 ("Points", (self._build_orientation,)),
                                 ("Faults", (self._build_faults,)),
                                 ("Polygons", (self._build_geology, self._build_simplify, self._build_tp))):
@@ -450,6 +450,17 @@ class App(tk.Tk):
         tk.Button(r, text="Densify Nodes", font=FONT_BOLD, width=20,
                   command=lambda: self._run("Densify nodes", self._do_densify)).pack(side="right")
 
+    def _build_thin(self, p):
+        f = section(p, "Thin Faults and Geology")
+        f.pack(fill="x", padx=6, pady=4)
+        r = tk.Frame(f, bg=BG)
+        r.pack(fill="x", pady=2)
+        self.v_thin_dist = tk.StringVar(value="50")
+        label(r, "Min Node Spacing (m)").pack(side="left")
+        entry(r, self.v_thin_dist, 7).pack(side="left", padx=3)
+        tk.Button(r, text="Thin Nodes", font=FONT_BOLD, width=20,
+                  command=lambda: self._run("Thin nodes", self._do_thin)).pack(side="right")
+
     def _build_tp(self, p):
         f = section(p, "Töpfer & Pillewizer Scaling")
         f.pack(fill="x", padx=6, pady=4)
@@ -600,6 +611,16 @@ class App(tk.Tk):
                 "Add nodes along the selected polygon and fault layers. New nodes on a shared boundary\n"
                 "are identical in the polygon on each side and in any fault running along it.\n"
                 "Shapes do not change. Vertices closer than 1 micrometre are first merged."),
+            "Min Node Spacing (m)": (
+                "Nodes closer than this to a neighbouring node, in metres, are removed where allowed\n"
+                "(degrees are converted approximately)."),
+            "Thin Nodes": (
+                "Remove close nodes from the selected polygon and fault layers (the opposite of Densify).\n"
+                "A node on a shared boundary is removed from the polygon on each side and from any fault\n"
+                "running along it, so they stay coincident. Never removed: triple junctions, nodes where a\n"
+                "fault meets, leaves or crosses a boundary or another fault, and line end points.\n"
+                "A node is kept if removing it would make a line or boundary cross another, or cut off\n"
+                "another node. Saves <layer>_thin."),
         }
         strat_tip = ("Add stratigraphic offset data to faults\n"
                      "Requires both fault and map polygon layers\n"
@@ -963,6 +984,12 @@ class App(tk.Tk):
             return (self._rec("polygon", self.v_polys), self._rec("line", self.v_faults),
                     float(self.v_dens_spacing.get()), self.v_dens_cross.get())
         self._processor().densify(*args)
+
+    def _do_thin(self, prepare, args=None):
+        if prepare:
+            return (self._rec("polygon", self.v_polys), self._rec("line", self.v_faults),
+                    float(self.v_thin_dist.get()))
+        self._processor().thin_nodes(*args)
 
     def _do_tp(self, prepare, args=None):
         if prepare:

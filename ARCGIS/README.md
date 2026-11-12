@@ -39,7 +39,7 @@ Below them, four tabs:
 
 | Tab | Tools |
 |-----|-------|
-| Clean | **Fix Map** (topology clean-up within a tolerance, with a text report), Repair (buffer 0), **Densify Nodes** |
+| Clean | **Fix Map** (topology clean-up within a tolerance, with a text report), Repair (buffer 0), **Densify Nodes**, **Thin Nodes** |
 | Points | Orientation subsampling: Stochastic, Kent with an optional Min kappa, Kent Outlier with an optional Iterative mode, Carmichael, 1o Sampling, with "Auto-fit to N pts" |
 | Faults | Merge Segments; Length, Graph, Strat Offset, Orientation Clusters |
 | Polygons | Rescale Map (Ignore Field and Codes, Tolerance, Diameter, Series), Simplify Map, Töpfer & Pillewizer scaling |
@@ -55,6 +55,10 @@ Results are added to the first map of the project, with the symbology of the lay
   The steps of the latest run are at the top, and the newest step is shown, so the target scale is shown at the end
   of a run.
 
+The fault attribute tools instead colour their result by the attribute they add: **Length** by `line_len`
+(graduated colours, 10 quantile classes), **Graph** by `edge_type`, **Strat Offset** by `max_off_ds` and
+**Orientation Clusters** by `cluster` (unique values).
+
 ## Metadata
 Every result gets a metadata file, `<file>.shp.sgt.xml` (see the main [README](../README.md#metadata)).
 **Show Metadata...** opens a window with the history of a layer: choose it from the list (it starts with the newest
@@ -63,7 +67,7 @@ which settings, back through every earlier GeoSubSampler or SGTool step; the **X
 
 ## Notes
 * **Fix Map** (settings: Tolerance, Fill enclosed gaps, Remaining overlaps; see
-  [How Fix Map works](../docs/FixMap.md)) repairs invalid polygons, removes doubled polygons/faults, cuts holes for polygons inside polygons,
+  [How Fix Map works](../docs/ReferenceManual.md#21-fix-map)) repairs invalid polygons, removes doubled polygons/faults, cuts holes for polygons inside polygons,
   closes small gaps and overlaps and matches nodes within the tolerance (metres), and adds nodes where lines cross.
   Outputs are `<layer>_fixed` shapefiles plus `<layer>_fixed_report.txt`. **Remaining overlaps** cuts any
   overlap left at the end out of the bigger (default), the smaller, or neither polygon.
@@ -71,8 +75,14 @@ which settings, back through every earlier GeoSubSampler or SGTool step; the **X
   by polygons, of any width or size, with the neighbour sharing the longest boundary.
 * **Densify Nodes** uses the selected polygon and/or fault layer, with a node spacing in metres; with both, new
   nodes are shared between them. Outputs are `<layer>_dense` shapefiles.
+* **Thin Nodes** is the opposite: it removes nodes closer than a minimum spacing (metres) from the selected polygon
+  and/or fault layer, removing a shared node from every feature that uses it. Junctions (three or more polygons,
+  where faults meet, leave or cross boundaries or other faults) and line ends are kept, and no removal may create a
+  self-intersection. Outputs are `<layer>_thin` shapefiles; progress for each round is written to the log.
 * **Strat Offset** also writes `<fault layer>_stratOffset_samples` (a point layer of where the offset was read,
   with the offset level and the units either side); it is added to the map without copying symbology.
+  Each fault is sampled where it meets a contact and at its two ends (an end already on a contact is not sampled
+  twice); a fault that meets no contact is sampled at its start, middle and end.
 * Feature classes in a geodatabase are exported once to a shapefile (field names shortened to
   10 characters). Every button press writes its results (shapefiles, reports, Fix Map's progress file) to a new
   folder named after the tool and the time, e.g. `Fix_map_20261105_164049`, beside the source, or in the project

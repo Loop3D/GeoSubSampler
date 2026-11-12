@@ -11,7 +11,7 @@ is named, it is in the file given in the section heading.
 **Contents**
 
 1. [Common behaviour](#1-common-behaviour)
-2. [Clean tab](#2-clean-tab): [Fix Map](#21-fix-map), [Repair](#22-repair-buffer-0), [Densify Nodes](#23-densify-nodes)
+2. [Clean tab](#2-clean-tab): [Fix Map](#21-fix-map), [Repair](#22-repair-buffer-0), [Densify Nodes](#23-densify-nodes), [Thin Nodes](#24-thin-nodes)
 3. [Orientation statistics](#3-orientation-statistics)
 4. [Point subsampling](#4-point-subsampling)
 5. [Fault tools](#5-fault-tools)
@@ -33,8 +33,9 @@ Every tool reads the layers from disk with geopandas, not from QGIS's in-memory 
 
 - A **shapefile** is read directly. If its folder is not writable, it is first copied (all sidecar
   files) to the project folder or the temp folder, because results are written beside the input.
-- A **GeoPackage** layer is exported once to a shapefile beside the GeoPackage
-  (`<gpkg name>_<layer name>.shp`); the GeoPackage itself is never changed. Field names longer than 10
+- A **GeoPackage** layer is exported to a shapefile beside the GeoPackage
+  (`<gpkg name>_<layer name>.shp`); the GeoPackage itself is never changed. The export is reused, and
+  redone whenever the GeoPackage (or its `-wal` file) is newer than it, so saved edits are seen. Field names longer than 10
   characters are shortened (`abcdefghijkl` -> `abcdefghij`, a clash gets `_1`, `_2` ...), and the field
   combo boxes are translated to the shortened names.
 - A field chosen in a combo box that shows an **alias** is translated back to the real field name.
@@ -266,6 +267,41 @@ Lengths in a geographic CRS are approximated with 110 540 m per degree of latitu
 111 320 m × cos(latitude) per degree of longitude. Shapes do not change: new nodes lie on the existing
 segments.
 
+### 2.4 Thin Nodes
+
+*Code: [`calcs/ThinNodes.py`](../calcs/ThinNodes.py) (`thin_layers`, `thin_paths`).*
+
+Removes nodes closer than **Min Node Spacing** to a neighbour, on all selected layers together, so that a
+node is removed from every feature that uses it.
+
+1. As in Densify, all rings and lines are flattened, vertices within `snap_tol` are welded, and the
+   network of **unique segments** is built; every unique coordinate is one node.
+2. **Fixed nodes** (never removed): every node whose number of distinct neighbours in the network is not
+   2 (triple junctions, fault/contact and fault/fault junctions and crossings, line ends, rings that touch
+   themselves), every line end point, every node used by three or more polygons, and one node of each
+   closed loop made only of removable nodes (an island, or a ring that touches nothing), so that it keeps
+   an anchor.
+3. **Rounds.** Candidates are the removable nodes whose shorter segment is below the spacing. A candidate
+   is taken in this round if its shorter segment is shorter than that of both neighbours (ties broken by a
+   fixed pseudo-random order), so no two neighbours go in the same round. For a node v between a and b the
+   removal (a-v-b → a-b) is accepted only if
+   - the new segment a-b shares no interior point with any other current segment (DE-9IM `T********`), so
+     it does not cross or overlap another boundary or fault; an existing a-b segment counts, so a ring is
+     never reduced to two nodes;
+   - the triangle a-v-b (the line a-v-b if flat) contains or touches no other live node, so nothing is cut
+     off to the other side of the new segment;
+   - no other removal in the same round creates the same segment a-b.
+
+   Because removals in one round are never neighbours, and each one is checked against the network
+   before the round, removals in the same round cannot cross each other. A rejected node is set aside
+   until one of its neighbours is removed. Rounds stop when no candidate is left.
+4. Every ring and line is rebuilt from its surviving nodes in its own order, at their **original**
+   coordinates (welding only decides which nodes are the same; unlike Densify, the output is not
+   welded, since welding two visits of a ring to a point a few nanometres apart would make a valid
+   polygon touch itself); rings are re-closed.
+
+Distances in a geographic CRS use the same approximation as Densify. Nodes are removed, never moved.
+
 ---
 
 ## 3. Orientation statistics
@@ -427,8 +463,9 @@ kept points are ranked by d/Distance + a/Angle and the best TN returned.
 3. Among valid candidates the one with the lowest score is chosen:
    score = d + (Δangle / Search Angle) × Dist. + ((180 − ACB)/(180 − Join Angle)) × Dist.
 4. Lines are processed from last to first; within a pass each line takes part in at most one merge. The
-   two lines are concatenated (reversed as needed; the gap between the ends becomes a segment). Passes
-   repeat until no merge is possible.
+   two lines are concatenated (reversed as needed). If the two ends are the same point it is kept once;
+   otherwise both ends are kept and the gap between them becomes a straight segment, so no vertex is moved
+   or dropped. Passes repeat until no merge is possible.
 
 The output has only the geometry; attributes are not carried over. Distances are in layer units.
 
@@ -709,6 +746,7 @@ The size and modification time recorded let the viewer tell when a file was chan
 |---|---|---|
 | Fix Map Tolerance (m) | layer units | ÷ 110 500 (lat), ÷ 111 300 cos(lat) (lon) |
 | Densify Node Spacing (m) | layer units | lengths × 110 540 / 111 320 cos(lat) |
+| Thin Min Node Spacing (m) | layer units | lengths × 110 540 / 111 320 cos(lat) |
 | Grid Size (Kent, Kent Outlier, Carmichael) | layer units | ÷ 110 000 |
 | 1o Distance | layer units | **degrees** (not converted) |
 | Merge Segments Dist. | layer units | **degrees** (not converted) |
@@ -741,6 +779,7 @@ The User Manual lists these in plain terms ([Known issues and caveats](UserManua
 | Units | 1o Distance, Merge Dist. and Simplify Area Tolerance are in layer units (degrees if geographic); other conversions are approximate (110 000 m/degree for grids and Rescale; 111 139 cos(lat) for `line_len`). | 9 |
 | Fix Map | Can remove features (duplicates, covered polygons, collapsed slivers); resolves gaps and overlaps by size and boundary length, not geology; chords can lie further than the tolerance from the original line. | 2.1 |
 | Densify | Fault-fault crossings are not noded (`line_crossings=False`). | 2.3 |
+| Thin Nodes | Nodes count as shared only if they coincide within `snap_tol`; removal is by distance only, so bends narrower than the spacing can be straightened (never into a crossing). | 2.4 |
 | Grid methods | Only computed fields are written; points are at the mean position of the measurements; κ can be very large for near-identical measurements. | 3.4, 4.3 |
 | Point targets | Auto-fit and T&P grid searches stop within ±15%, typically just under the target. | 4.7, 7 |
 | Stochastic | Seed from the clock, so runs differ (the seed is in the metadata). | 4.2 |

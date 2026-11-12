@@ -805,6 +805,37 @@ class GSSProcessor:
             msg += f"; {stats['vertices_welded']} near-coincident vertices welded"
         self.log(msg + ".")
 
+    @_operation("Thin nodes")
+    def thin_nodes(self, poly_rec, fault_rec, min_dist_m):
+        """
+        Remove nodes closer together than ``min_dist_m`` metres, keeping the polygon and fault layers
+        topologically consistent: a node on a boundary shared by two polygons, or run along by a fault,
+        is removed from all of them. Junctions and line ends are kept, and no removal may create a
+        self-intersection.
+        """
+        from calcs.ThinNodes import thin_layers
+        from calcs.Densify import check_same_crs
+        recs = [r for r in (poly_rec, fault_rec) if r is not None]
+        if not recs:
+            raise GSSError("Thin Nodes: select a polygon layer and/or a fault layer.")
+        if min_dist_m <= 0:
+            raise GSSError("Thin Nodes: the minimum node spacing must be a number of metres above zero.")
+        gdfs = [gpd.read_file(self.resolved_source(r)) for r in recs]
+        try:
+            check_same_crs(gdfs)
+        except ValueError as exc:
+            raise GSSError(f"Thin Nodes: {exc}")
+        results, stats = thin_layers(gdfs, min_dist_m,
+                                     geographic=any(r.get("geographic") for r in recs),
+                                     progress=self.log)
+        tag = "_thin"
+        for rec, gdf in zip(recs, results):
+            self._emit(self._save_gdf(gdf, self._make_output_path(rec, tag)), rec)
+        msg = f"Thinned to {min_dist_m:g} m: {stats['vertices_in']} -> {stats['vertices_out']} vertices"
+        if stats.get("kept_to_avoid_intersection"):
+            msg += f"; {stats['kept_to_avoid_intersection']} close nodes kept to avoid self-intersections"
+        self.log(msg + ".")
+
     # ------------------------------------------------------------------ faults
     @_operation("Merge fault segments")
     def merge_segments(self, fault_rec, tolerance, search_angle, join_angle):

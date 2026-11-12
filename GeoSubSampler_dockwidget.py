@@ -83,7 +83,7 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         self._build_priority_group(ml)
         ml.addWidget(self.stackedWidget_sections, 1)
 
-        self._add_tab("Clean", self._build_fixmap_group, self._build_densify_group)
+        self._add_tab("Clean", self._build_fixmap_group, self._build_densify_group, self._build_thin_group)
         self._add_tab("Points", self._build_orientation_group)
         self._add_tab("Faults", self._build_fault_group)
         self._add_tab("Polygons", self._build_geology_group, self._build_simplify_group, self._build_tp_group)
@@ -447,6 +447,22 @@ class GeoSubSamplerDockWidget(QtWidgets.QDockWidget):
         row_dens.addStretch()
         row_dens.addWidget(self.pushButton_densify)
         vbox.addLayout(row_dens)
+        layout.addWidget(grp)
+
+    # ---- Thin group (remove close nodes, faults and geology) ------------
+
+    def _build_thin_group(self, layout):
+        grp = QtWidgets.QGroupBox("Thin Faults and Geology")
+        vbox = QtWidgets.QVBoxLayout(grp)
+        self.lineEdit_thin_distance = QtWidgets.QLineEdit("50")
+        self.lineEdit_thin_distance.setFixedWidth(60)
+        self.pushButton_thin = QtWidgets.QPushButton("Thin Nodes")
+        row_thin = QtWidgets.QHBoxLayout()
+        row_thin.addWidget(self._lbl("Min Node Spacing (m)"))
+        row_thin.addWidget(self.lineEdit_thin_distance)
+        row_thin.addStretch()
+        row_thin.addWidget(self.pushButton_thin)
+        vbox.addLayout(row_thin)
         layout.addWidget(grp)
 
     # ---- Simplify Map group --------------------------------------------

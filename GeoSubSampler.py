@@ -348,7 +348,14 @@ class GeoSubSampler:
         if not hasattr(self, '_field_name_maps'):
             self._field_name_maps = {}
 
-        if not os.path.exists(out_path) or out_path not in self._field_name_maps:
+        # The copy is redone whenever the source has changed since it was made, so edits saved to the
+        # GeoPackage are seen. While QGIS has a GeoPackage open, saved edits can sit in its -wal file.
+        def _mtime(p):
+            return os.path.getmtime(p) if os.path.exists(p) else 0.0
+        stale = (not os.path.exists(out_path)
+                 or _mtime(out_path) < max(_mtime(path_part), _mtime(path_part + "-wal")))
+
+        if stale or out_path not in self._field_name_maps:
             match = re.search(r'layername=([^|]+)', source)
             layername = match.group(1) if match else None
             try:
@@ -356,7 +363,7 @@ class GeoSubSampler:
                        else gpd.read_file(path_part))
                 field_map = self._shapefile_safe_columns(gdf.columns)
                 self._field_name_maps[out_path] = field_map
-                if not os.path.exists(out_path):
+                if stale:
                     if any(k != v for k, v in field_map.items()):
                         gdf = gdf.rename(columns=field_map)
                     gdf.to_file(out_path, driver='ESRI Shapefile')
@@ -784,6 +791,8 @@ class GeoSubSampler:
         elif label == "Densify nodes":
             params = {"node_spacing_m": d.lineEdit_densify_spacing.text(),
                       "shared_node_at_fault_crossing": d.checkBox_densify_crossings.isChecked()}
+        elif label == "Thin nodes":
+            params = {"min_node_spacing_m": d.lineEdit_thin_distance.text()}
         else:
             params = {}
         return {k: v for k, v in params.items() if v not in ("", None, [])}
@@ -2388,6 +2397,48 @@ class GeoSubSampler:
                if stats.get('vertices_welded') else "") + ".",
             level=MSG_SUCCESS, duration=15)
 
+    def thinNodes(self):
+        """
+        Remove nodes closer together than the chosen distance, keeping the polygon and fault layers
+        topologically consistent: a node on a boundary shared by two polygons, or run along by a
+        fault, is removed from all of them. Junctions (three or more polygons, fault/contact
+        meetings and crossings, line ends) are kept, and no removal may create a self-intersection.
+        """
+        from .calcs.ThinNodes import thin_layers
+        polygon_layer = self.dockwidget.mMapLayerComboBox_maps_polygons.currentLayer()
+        fault_layer = self.dockwidget.mMapLayerComboBox_fault_polylines.currentLayer()
+        layers = [l for l in (polygon_layer, fault_layer) if l is not None]
+        if not layers:
+            self._warn("Thin Nodes: select a polygon layer and/or a fault layer.")
+            return
+        try:
+            min_dist = float(self.dockwidget.lineEdit_thin_distance.text())
+        except ValueError:
+            min_dist = 0.0
+        if min_dist <= 0:
+            self._warn("Thin Nodes: the minimum node spacing must be a number of metres above zero.")
+            return
+        gdfs = []
+        for layer in layers:
+            path = self._resolved_source(layer)
+            if not os.path.exists(path):
+                self._warn("Sorry, only layers saved to disk as a shapefile can be processed!")
+                return
+            gdfs.append(gpd.read_file(path))
+        geographic = any(l.crs().isGeographic() for l in layers)
+        self._meta_extra_sources = [self._resolved_source(l) for l in layers]
+        results, stats = thin_layers(gdfs, min_dist, geographic=geographic, progress=print)
+        tag = "_thin"
+        for layer, gdf in zip(layers, results):
+            out_path = self._save_gdf(gdf, self._make_output_path(layer, tag))
+            self._add_layer_with_style(QgsVectorLayer(out_path, layer.name() + tag, "ogr"), layer,
+                                       layer.name() + tag)
+        self._warn(
+            f"Thinned to {min_dist:g} m: {stats['vertices_in']} -> {stats['vertices_out']} vertices"
+            + (f"; {stats['kept_to_avoid_intersection']} close nodes kept to avoid self-intersections"
+               if stats.get('kept_to_avoid_intersection') else "") + ".",
+            level=MSG_SUCCESS, duration=15)
+
     def updateMapsFields(self):
         """Update the fields in the maps layer combo box when a new layer is selected."""
         layerName = self.dockwidget.mMapLayerComboBox_maps_polygons.currentText()
@@ -2632,6 +2683,18 @@ class GeoSubSampler:
             "are identical in the polygon on each side and in any fault running along it.\n"
             "Shapes do not change. Vertices closer than 1 micrometre are first merged."
         )
+        self.dockwidget.lineEdit_thin_distance.setToolTip(
+            "Nodes closer than this to a neighbouring node, in metres, are removed where allowed\n"
+            "(degrees are converted approximately)."
+        )
+        self.dockwidget.pushButton_thin.setToolTip(
+            "Remove close nodes from the selected polygon and fault layers (the opposite of Densify).\n"
+            "A node on a shared boundary is removed from the polygon on each side and from any fault\n"
+            "running along it, so they stay coincident. Never removed: triple junctions, nodes where a\n"
+            "fault meets, leaves or crosses a boundary or another fault, and line end points.\n"
+            "A node is kept if removing it would make a line or boundary cross another, or cut off\n"
+            "another node. Saves <layer>_thin."
+        )
         self.dockwidget.pushButton_simplifyMap.setToolTip(
             "Simplify map polygons based on area tolerance, respecting fault topology"
         )
@@ -2724,6 +2787,8 @@ class GeoSubSampler:
             self.dockwidget.pushButton_densify.clicked.connect(
                 self._guard(self.densify, "Densify nodes")
             )
+            self.dockwidget.pushButton_thin.clicked.connect(
+                self._guard(self.thinNodes, "Thin nodes"))
             self.dockwidget.pushButton_show_metadata.clicked.connect(
                 lambda *_a: self.showMetadata())
             self.dockwidget.mFieldComboBox_dip.setAllowEmptyFieldName(True)

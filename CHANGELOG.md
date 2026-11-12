@@ -3,6 +3,15 @@
 All notable changes to GeoSubSampler, newest first. See the [README](README.md) for an overview and the [User Manual](docs/UserManual.md) for how to use each tool.
 
 ## Unreleased
+- *New:* **Thin Nodes** (Clean tab, QGIS and ArcGIS Pro) - the opposite of Densify: removes nodes closer than a
+  minimum spacing from polygon and fault layers together, so shared boundaries and faults along them lose the same
+  nodes. Triple junctions, fault/contact junctions and crossings and line ends are kept, and no removal may create a
+  self-intersection.
+- Merge Segments no longer drops the end of the second fault at a join: when the two ends are apart (up to Dist.),
+  both are kept and joined by a straight segment. Before, the merged fault cut across from one end to the second
+  vertex of the other fault, moving it by up to the Dist. setting (up to 9 m in a test with Dist. = 10 m).
+- QGIS: a GeoPackage layer's shapefile copy is redone whenever the GeoPackage has changed; before, the first copy was
+  reused for good, so tools could run on out-of-date features.
 - Fault results (Length, Graph, Strat Offset, Clusters) are coloured by their new attribute, in QGIS and ArcGIS Pro.
 - Strat Offset also samples the start and end of faults that cross contacts.
 - Simplify Map adds its simplified faults (`<faults>_sn_si_<tolerance>`) to the map; they were written but not loaded.
