@@ -56,7 +56,8 @@ class StructuralPolygonSubSampler:
         min_area_threshold : float
             Minimum area threshold for both holes and polygons
         distance_threshold : float, optional
-            Maximum distance for considering nodes as "shared" (default: 1e-6)
+            A small polygon that touches no other polygon may merge into one within this
+            distance (layer units); the gap between them is filled (default: 1e-6)
         lithoname : str, optional
             Column name containing lithology codes
         strat1 : str, optional
@@ -240,7 +241,7 @@ class StructuralPolygonSubSampler:
             return max_inherit_field
         
         def find_merge_targets(frame, small_idx, distance_threshold,
-                               lithoname, strat1, strat2, strat3, strat4):
+                               lithoname, strat1, strat2, strat3, strat4, near_tol=None):
             """
             For every small polygon, the polygon it should merge into, using hierarchical
             preferences for lithology and stratigraphy and the longest shared boundary.
@@ -249,22 +250,32 @@ class StructuralPolygonSubSampler:
             pair, the shared boundary lengths of all pairs are computed in one go, and the
             attribute rules then run on plain lists (no pandas row access per candidate).
 
+            With ``near_tol`` the candidates are the polygons within that distance (not only the
+            touching ones), and the "shared boundary" is the length of the small polygon's
+            boundary lying within ``near_tol`` of the candidate's boundary.
+
             Returns {small index: (target index, shared length, merge reason)}; polygons with no
             neighbour sharing a boundary are left out.
             """
             geoms = frame.geometry.values
             tree = shapely.STRtree(geoms)
-            si_l, ci = tree.query(geoms[small_idx], predicate='intersects')
+            if near_tol:
+                si_l, ci = tree.query(geoms[small_idx], predicate='dwithin', distance=near_tol)
+            else:
+                si_l, ci = tree.query(geoms[small_idx], predicate='intersects')
             si = small_idx[si_l]
             keep = si != ci
             si, ci = si[keep], ci[keep]
             if len(si) == 0:
                 return {}
 
-            # shared boundary length of every touching pair
+            # shared boundary length of every touching (or, with near_tol, nearby) pair
             try:
                 bnd = shapely.boundary(geoms)
-                lengths = shapely.length(shapely.intersection(bnd[si], bnd[ci]))
+                if near_tol:
+                    lengths = shapely.length(shapely.intersection(bnd[si], shapely.buffer(bnd[ci], near_tol)))
+                else:
+                    lengths = shapely.length(shapely.intersection(bnd[si], bnd[ci]))
             except Exception:
                 # an invalid geometry makes the bulk call fail: do the pairs one by one, with
                 # the per-pair handling (buffer fallback) that always applied
@@ -445,9 +456,22 @@ class StructuralPolygonSubSampler:
             small_polygon_count = len(small_idx)
             found = find_merge_targets(gdf_cleaned, small_idx, distance_threshold,
                                        lithoname, strat1, strat2, strat3, strat4)
+            # A small polygon that touches no other polygon (e.g. it is separated from its
+            # neighbours by a sliver gap) may merge into a polygon within the tolerance; the
+            # gap between the two is filled when they are merged (see below).
+            near_merges = set()
+            orphans = np.array([int(i) for i in small_idx if int(i) not in found], dtype=np.int64)
+            if len(orphans) and distance_threshold and distance_threshold > 1e-6:
+                found_near = find_merge_targets(gdf_cleaned, orphans, distance_threshold,
+                                                lithoname, strat1, strat2, strat3, strat4,
+                                                near_tol=distance_threshold)
+                found.update(found_near)
+                near_merges = set(found_near)
             # Maps small polygon index to (target polygon index, merge reason)
             merge_targets = {int(i): (found[int(i)][0], found[int(i)][2])
                              for i in small_idx if int(i) in found}
+            all_geoms = gdf_cleaned.geometry.values
+            geom_tree = shapely.STRtree(all_geoms) if near_merges else None
 
             print(f"Found {small_polygon_count} small polygons, {len(merge_targets)} with merge candidates")
             
@@ -474,6 +498,17 @@ class StructuralPolygonSubSampler:
                 for small_idx, merge_reason in small_data:
                     if small_idx not in merged_indices:
                         geometries_to_merge.append(gdf_cleaned.iloc[small_idx].geometry)
+                        if small_idx in near_merges:
+                            # the two do not touch: also add the gap between them (the area
+                            # within the tolerance of both), minus any other polygon
+                            sg, tg = all_geoms[small_idx], all_geoms[target_idx]
+                            bridge = sg.buffer(distance_threshold).intersection(tg.buffer(distance_threshold))
+                            others = [int(o) for o in geom_tree.query(bridge, predicate='intersects')
+                                      if int(o) not in (small_idx, target_idx)]
+                            if others:
+                                bridge = bridge.difference(unary_union(all_geoms[others]))
+                            if not bridge.is_empty:
+                                geometries_to_merge.append(bridge)
                         
                         # Collect all inherit values from small polygon (inherit, inherit1, inherit2, etc.)
                         small_inherit_values = []

@@ -499,7 +499,9 @@ class App(tk.Tk):
                 "grid cells."),
             str(self.v_fo_dist): "Distance buffer for first order retention of points",
             str(self.v_fo_angle): "Angle tolerance for first order retention of points",
-            str(self.v_tol): "Tolerance for node snapping in layer units",
+            str(self.v_tol): ("Metres (converted for geographic layers). A small polygon that touches no other\n"
+                              "polygon (e.g. separated by a sliver gap) may merge into a polygon within this\n"
+                              "distance; the gap between them is filled. Also used by T&P."),
             str(self.v_ignore_field): "Field selected for ignore codes",
             str(self.v_diam): "Minimum threshold diameter of polygons to be retained (in km)",
             str(self.v_inc): "Increment for arithmetic series of maps",
@@ -518,10 +520,10 @@ class App(tk.Tk):
                                        "longer than this."),
             str(self.v_ratio): "OS/TS ratio — e.g. 0.1 for going from 1:50 000 to 1:500 000",
             str(self.v_incr): (
-                "Fractional reduction per step (0–1).\n"
-                "Step n ratio = (1 - increment)^n\n"
-                "e.g. increment=0.1 → steps 0.9, 0.81, 0.729 …\n"
-                "Stops after the first step that drops below the OS/TS ratio."),
+                "Step between successive OS/TS ratios (0–1).\n"
+                "Step n ratio = 1 - n × increment, down to the OS/TS ratio,\n"
+                "which is always the last step.\n"
+                "e.g. ratio 0.1, increment 0.1 → steps 0.9, 0.8, 0.7 … 0.1"),
         }
         ordinals = ["1st", "2nd", "3rd", "4th", "5th"]
         for n, var in enumerate(self.v_prio):
@@ -698,7 +700,7 @@ class App(tk.Tk):
     def _log(self, message, level="info"):
         self.queue.put(("log", message, level))
 
-    def _add_output(self, path, like, group=None):
+    def _add_output(self, path, like, group=None, style=None):
         """A result was written: offer it in the dropdowns and queue it for the map. group says where it goes in
         the map: None for the Outputs group, or a T&P step ({"kind": "tp", "name": ...})."""
         # also offer the result in the layer dropdowns
@@ -721,7 +723,10 @@ class App(tk.Tk):
                     pending = json.load(f)
             except Exception:
                 pending = []
-            pending.append({"path": path, "like": like, "group": group or {"kind": "outputs"}})
+            entry = {"path": path, "like": like, "group": group or {"kind": "outputs"}}
+            if style:
+                entry["style"] = style       # colour by a field once added (GeoSubSampler.pyt)
+            pending.append(entry)
             with open(PENDING_FILE, "w") as f:
                 json.dump(pending, f)
         except OSError as exc:

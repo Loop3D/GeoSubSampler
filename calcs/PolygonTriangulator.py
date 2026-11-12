@@ -57,29 +57,26 @@ class PolygonTriangulator:
         
         Args:
             target_ids: List of polygon IDs to triangulate (or single ID)
-            field_config: Dict specifying field names and types for random values
-                         Format: {'field_name': 'string'|'float'|'int', ...}
-                         Defaults to 5 fields if None provided
-        
+            field_config: Optional dict of extra fields to fill with random values on the
+                         triangles, {'field_name': 'string'|'float'|'int', ...}.
+                         None (default) adds no such fields.
+
         Returns:
-            GeoDataFrame containing both triangulated and untriangulated polygons
+            GeoDataFrame containing both triangulated and untriangulated polygons.
+            The bookkeeping columns it adds (rec_id, rec_type, tri_id, src_id, src_index,
+            orig_id, ...) are listed in ``self.helper_columns``; the merge step uses
+            ``rec_type``, and :meth:`drop_helper_columns` removes them all afterwards.
         """
         # Handle single ID
         if not isinstance(target_ids, (list, tuple)):
             target_ids = [target_ids]
-        
+
         # Convert to strings
         target_ids = [str(tid) for tid in target_ids]
-        
-        # Default field configuration
+
+        # No random filler fields unless asked for
         if field_config is None:
-            field_config = {
-                'field_str': 'string',
-                'field_float': 'float', 
-                'field_int1': 'int',
-                'field_int2': 'int',
-                'field_float2': 'float'
-            }
+            field_config = {}
         
         print(f"Triangulating {len(target_ids)} polygon IDs...")
         
@@ -142,7 +139,6 @@ class PolygonTriangulator:
                             'src_id': target_id,
                             'src_index': idx,
                             'orig_id': str(row[self.id_column]),
-                            'area': triangle.area,
                             'geometry': triangle,
                         }
                         # Unique value in each priority field so a triangle never
@@ -177,7 +173,6 @@ class PolygonTriangulator:
                     'src_id': None,
                     'src_index': idx,
                     'orig_id': str(row[self.id_column]),
-                    'area': row.geometry.area,
                     'geometry': row.geometry
                 }
                 
@@ -208,7 +203,11 @@ class PolygonTriangulator:
         # Set CRS to match original
         if hasattr(self.gdf, 'crs') and self.gdf.crs is not None:
             result_gdf.crs = self.gdf.crs
-        
+
+        # The columns added here, not in the input: removed again after merging
+        self.helper_columns = [c for c in result_gdf.columns
+                               if c != 'geometry' and c not in self.gdf.columns]
+
         triangles_count = len([r for r in all_records if r['rec_type'] == 'triangle'])
         
         print(f"Created combined dataset:")
@@ -218,6 +217,12 @@ class PolygonTriangulator:
         
         return result_gdf
     
+    @staticmethod
+    def drop_helper_columns(gdf, helper_columns):
+        """Remove the bookkeeping columns that :meth:`triangulate_polygons` added (once merging is done)."""
+        drop = [c for c in (helper_columns or []) if c in gdf.columns]
+        return gdf.drop(columns=drop) if drop else gdf
+
     def _triangulate_single_polygon(self, polygon):
         """
         Triangulate a single polygon using Delaunay triangulation with hole awareness.
@@ -608,11 +613,11 @@ if __name__ == "__main__":
             # Show sample data
             print("\nSample triangle data:")
             if not triangles.empty:
-                print(triangles[['rec_id', 'tri_id', 'src_id', 'area'] + list(field_config.keys())].head(3))
+                print(triangles[['rec_id', 'tri_id', 'src_id'] + list(field_config.keys())].head(3))
             
             print("\nSample original polygon data:")
             if not originals.empty:
-                print(originals[['rec_id', 'orig_id', 'area'] + list(field_config.keys())].head(3))
+                print(originals[['rec_id', 'orig_id'] + list(field_config.keys())].head(3))
             
             # Visualize
             fig, axes = triangulator.visualize_triangulation(result_gdf)

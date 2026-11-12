@@ -581,6 +581,69 @@ class GeoSubSampler:
             logging.getLogger(__name__).debug("Ignored exception", exc_info=True)
         self._add_to_outputs(new_layer, source_layer)
 
+    # qualitative palette (Tableau 10) for categorical fault styles
+    _CATEGORY_COLOURS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+                         "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+
+    def _style_by_field(self, layer, field, categorical=True, width=0.5):
+        """
+        Colour a line layer by an attribute: one colour per distinct value (categorical=True),
+        or a continuous colour ramp over the value range (categorical=False).
+        Silently leaves the layer as it is if the field is missing or styling fails.
+        """
+        try:
+            from qgis.core import (QgsSymbol, QgsRendererCategory, QgsCategorizedSymbolRenderer,
+                                   QgsGraduatedSymbolRenderer, QgsStyle, QgsClassificationQuantile)
+            from qgis.PyQt.QtGui import QColor
+            if layer is None or not layer.isValid():
+                return
+            idx = layer.fields().indexFromName(field)
+            if idx < 0:
+                return
+            geom_type = layer.geometryType()
+
+            def _symbol(colour=None):
+                sym = QgsSymbol.defaultSymbol(geom_type)
+                if colour is not None:
+                    sym.setColor(colour)
+                try:
+                    sym.setWidth(width)
+                except AttributeError:
+                    pass
+                return sym
+
+            if categorical:
+                values = sorted(layer.uniqueValues(idx), key=lambda v: (v is None, str(v)))
+                categories = []
+                n = len(values)
+                for i, val in enumerate(values):
+                    if i < len(self._CATEGORY_COLOURS):
+                        colour = QColor(self._CATEGORY_COLOURS[i])
+                    else:
+                        colour = QColor.fromHsvF((i * 0.618034) % 1.0, 0.75, 0.85)
+                    label = "NULL" if val is None or str(val) == "NULL" else str(val)
+                    categories.append(QgsRendererCategory(val, _symbol(colour), label))
+                if n == 0:
+                    return
+                renderer = QgsCategorizedSymbolRenderer(field, categories)
+            else:
+                renderer = QgsGraduatedSymbolRenderer(field)
+                renderer.setSourceSymbol(_symbol())
+                ramp = QgsStyle.defaultStyle().colorRamp("Viridis") or \
+                    QgsStyle.defaultStyle().colorRamp("Spectral")
+                if ramp is not None:
+                    renderer.setSourceColorRamp(ramp)
+                renderer.setClassificationMethod(QgsClassificationQuantile())
+                renderer.updateClasses(layer, 10)
+            layer.setRenderer(renderer)
+            layer.triggerRepaint()
+            try:
+                self.iface.layerTreeView().refreshLayerSymbology(layer.id())
+            except Exception:
+                pass
+        except Exception:
+            logging.getLogger(__name__).debug("Could not style layer by field", exc_info=True)
+
     def _outputs_group(self):
         """The layer-tree group "Outputs" (created at the top of the layer panel if it does not exist)."""
         root = QgsProject.instance().layerTreeRoot()
@@ -1866,9 +1929,11 @@ class GeoSubSampler:
                     new_path = self._make_output_path(
                         self.polygon_layer, "_min_area" + parameter)
 
-                    # Convert QGIS layer to GeoPandas if first in series
+                    # Convert QGIS layer to GeoPandas if first in series; every step starts from it
                     if upScale == minScale:
-                        gdf = gpd.read_file(self._resolved_source(self.polygon_layer))
+                        gdf_input = gpd.read_file(self._resolved_source(self.polygon_layer))
+                    gdf = gdf_input
+                    helper_columns = []
 
                     # Handle dykes special case
                     if dyke_index != 0 and not dyke_codes:
@@ -1887,6 +1952,7 @@ class GeoSubSampler:
                             lithoname=lithoname,
                         )
                         gdf = triangulator.triangulate_polygons(target_ids=dyke_codes)
+                        helper_columns = getattr(triangulator, 'helper_columns', [])
                         self._report_ignore_codes(triangulator, dyke_codes, gdf)
 
                     # Create an instance of StructuralPolygonSubSampler
@@ -1902,6 +1968,8 @@ class GeoSubSampler:
                         strat4=strat4,
                         lithoname=lithoname,
                     )
+                    if helper_columns:           # the triangulation's bookkeeping columns
+                        output_gdf = self._triangulator_class().drop_helper_columns(output_gdf, helper_columns)
                     new_path = self._save_gdf(output_gdf, new_path)
 
                     # reload as layer
@@ -1976,6 +2044,7 @@ class GeoSubSampler:
 
             self._add_layer_with_style(graph_layer, self.polyline_layer,
                                        self.polyline_layer.name() + "_graph")
+            self._style_by_field(graph_layer, "edge_type", categorical=True)
 
     def fault_strat_offset(self):
         self.polyline_layer = (
@@ -2025,6 +2094,7 @@ class GeoSubSampler:
 
             self._add_layer_with_style(graph_layer, self.polyline_layer,
                                        self.polyline_layer.name() + "_stratOffset")
+            self._style_by_field(graph_layer, "max_off_ds", categorical=True)
 
             # the points where the offset was read (one per fault / contact crossing), with
             # their offset level and the units either side
@@ -2066,6 +2136,7 @@ class GeoSubSampler:
 
             self._add_layer_with_style(upscaled_layer, self.polyline_layer,
                                        self.polyline_layer.name() + "_Length")
+            self._style_by_field(upscaled_layer, "line_len", categorical=False)
 
         else:
             self.iface.messageBar().pushMessage(
@@ -2116,6 +2187,7 @@ class GeoSubSampler:
 
             self._add_layer_with_style(upscaled_layer, self.polyline_layer,
                                        self.polyline_layer.name() + "_fault_clusters")
+            self._style_by_field(upscaled_layer, "cluster", categorical=True)
 
     def updatePointsFields(self):
         """Update the fields in the points layer combo box when a new layer is selected."""
@@ -2131,16 +2203,14 @@ class GeoSubSampler:
         if polygon_layer is None or fault_layer is None:
             self._warn("Map simplification: select both a polygon layer and a fault layer.")
             return
-        from .calcs.PolygonSimplification import vector_simplify_file_two_stage   # (loaded when needed)
+        from .calcs.PolygonSimplification import (vector_simplify_file_two_stage,   # (loaded when needed)
+                                                  simplified_fault_path)
         area_tolerance = int(self.dockwidget.lineEdit_area_tolerance.text())
         input_file = self._resolved_source(polygon_layer)
         fault_file = self._resolved_source(fault_layer)
         self._meta_extra_sources = [input_file, fault_file]
         output_file = self._make_output_path(polygon_layer, "_MVW")
         poly_name=polygon_layer.name()+"_MVW"
-        # the faults are written beside the polygon output, as <fault name>_sn_si_<tolerance>.shp
-        fault_path = os.path.join(os.path.dirname(output_file),
-                                  os.path.splitext(os.path.basename(fault_file))[0] + "_sn_si.shp")
         fault_name=fault_layer.name()+"_sn_si"
         result = vector_simplify_file_two_stage(
                         input_file=input_file,
@@ -2149,6 +2219,8 @@ class GeoSubSampler:
                         threshold=area_tolerance,
                         fault_file=fault_file
                     )
+        # the faults are written beside the polygon output, as <fault name>_sn_si_<tolerance>.shp
+        fault_path = simplified_fault_path(result, output_file, fault_file, area_tolerance)
         upscaled_layer = QgsVectorLayer(
                 output_file,
                 poly_name,
@@ -2433,7 +2505,9 @@ class GeoSubSampler:
             "Layer map polygons selected for processing"
         )
         self.dockwidget.lineEdit_node_tolerance.setToolTip(
-            "Tolerance for node snapping in layer units"
+            "Metres (converted for geographic layers). A small polygon that touches no other\n"
+            "polygon (e.g. it is separated from its neighbours by a sliver gap) may merge into a\n"
+            "polygon within this distance; the gap between them is filled. Also used by T&P."
         )
         self.dockwidget.mFieldComboBox_priority_1.setToolTip(
             "Field selected for 1st priority of polygon merging and fault strat offset"
@@ -2508,10 +2582,10 @@ class GeoSubSampler:
             "OS/TS ratio — e.g. 0.1 for going from 1:50 000 to 1:500 000"
         )
         self.dockwidget.lineEdit_tp_increment.setToolTip(
-            "Fractional reduction per step (0–1).\n"
-            "Step n ratio = (1 - increment)^n\n"
-            "e.g. increment=0.1 → steps 0.9, 0.81, 0.729 …\n"
-            "Stops after the first step that drops below the OS/TS ratio."
+            "Step between successive OS/TS ratios (0–1).\n"
+            "Step n ratio = 1 - n × increment, down to the OS/TS ratio,\n"
+            "which is always the last step.\n"
+            "e.g. ratio 0.1, increment 0.1 → steps 0.9, 0.8, 0.7 … 0.1"
         )
         self.dockwidget.pushButton_tp_run.setToolTip(
             "Apply Töpfer & Pillewizer scaling to all selected layers.\n"

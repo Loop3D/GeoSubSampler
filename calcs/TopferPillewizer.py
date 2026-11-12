@@ -56,7 +56,7 @@ def dipdir_to_strike(dipdir_values, original_values=None):
         orig = pd.to_numeric(original_values, errors='coerce').dropna()
         if len(orig) and orig.max() <= 180:
             strike = strike % 180
-    return strike
+    return strike.round(1)
 
 
 def scale_iterations(target_ratio, increment):
@@ -492,7 +492,7 @@ def _best_neighbor_idx(gdf, si, neighbors, priority_cols):
     gdf          : current working GeoDataFrame (reset_index applied)
     si           : positional index of the polygon to absorb
     neighbors    : list of (positional_index, shared_boundary_length) tuples
-    priority_cols: column names tried in order (lithoname first, then strat1..4)
+    priority_cols: column names tried in order (strat1..4, then lithoname)
 
     Within each priority tier the candidate with the *longest* shared boundary
     is preferred.  Falls back to longest boundary when no attribute match exists.
@@ -518,8 +518,8 @@ def _merge_to_count(gdf, target_count, priority_cols=None):
     Every polygon is *merged* (dissolved via union), never deleted, so no
     holes are created in the map.  The priority hierarchy is:
 
-        lithoname match > strat1 match > strat2 match > strat3 match
-        > strat4 match > longest shared boundary (fallback)
+        strat1 match > strat2 match > strat3 match > strat4 match
+        > lithoname match > longest shared boundary (fallback)  (as Rescale Map)
 
     Parameters
     ----------
@@ -631,6 +631,7 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
         return gdf.copy()
 
     work = gdf.copy()
+    helper_columns = []
 
     # Optional dyke pre-processing (once, before merging)
     if (dyke_field and dyke_codes and triangulator_class is not None
@@ -654,6 +655,7 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
             lithoname=lithoname,
         )
         work = trig.triangulate_polygons(target_ids=dyke_codes)
+        helper_columns = getattr(trig, 'helper_columns', [])
         info['dyke_field'] = dyke_field
         info['dyke_codes'] = ', '.join(str(c) for c in dyke_codes)
         s = getattr(trig, 'last_summary', None)
@@ -672,9 +674,10 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
         strat4=_or_none(strat4),
     )
 
-    # Priority column list for count-controlled merge (same order as hierarchy)
+    # Priority column list for count-controlled merge: Priority 1-4, then the lithology
+    # (Priority 5), the same order as clean_small_polygons_and_holes_new (Rescale Map)
     priority_cols = [
-        c for c in [lithoname, strat1, strat2, strat3, strat4]
+        c for c in [strat1, strat2, strat3, strat4, lithoname]
         if c and c in work.columns
     ]
 
@@ -705,4 +708,8 @@ def scale_polygons_tp(gdf, ratio, polygon_subsampler_class,
         info['count_merge_polygons'] = len(work) - tn
         work = _merge_to_count(work, tn, priority_cols=priority_cols)
 
+    # remove the triangulation's bookkeeping columns once merging is done
+    drop = [c for c in helper_columns if c in work.columns]
+    if drop:
+        work = work.drop(columns=drop)
     return work

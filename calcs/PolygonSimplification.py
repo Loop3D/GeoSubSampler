@@ -2499,6 +2499,26 @@ def simplify_fault_network(fault_file: str, threshold: float,
 #              preservation, and unique geological contact pinning
 # =============================================================================
 
+def simplified_fault_path(result, output_file, fault_file, threshold):
+    """
+    The simplified fault file written by :func:`vector_simplify_file_two_stage`.
+
+    Taken from its result when available; otherwise the name Stage 1 uses
+    (``<fault>_sn_si_<threshold>.shp`` beside the polygon output, or ``<fault>_si_<threshold>.shp``
+    when Stage 0 did not write a snapped copy).
+    """
+    path = result.get('simplified_fault_file') if isinstance(result, dict) else None
+    if path and os.path.exists(path):
+        return path
+    out_dir = os.path.dirname(output_file)
+    stem = os.path.splitext(os.path.basename(fault_file))[0]
+    for name in (f"{stem}_sn_si_{threshold}.shp", f"{stem}_si_{threshold}.shp"):
+        candidate = os.path.join(out_dir, name)
+        if os.path.exists(candidate):
+            return candidate
+    return os.path.join(out_dir, f"{stem}_sn_si_{threshold}.shp")
+
+
 def vector_simplify_file_two_stage(
         input_file,
         output_file,
@@ -3315,6 +3335,7 @@ def vector_simplify_file_two_stage(
         return {
             'method':              method,
             'threshold':           threshold,
+            'simplified_fault_file': simplified_fault_file,   # the faults written in Stage 1
             'features_processed':  processed,
             'features_simplified': simplified,
             'features_collapsed':  collapsed,              # polygons written unsimplified (thin-body fallback)
