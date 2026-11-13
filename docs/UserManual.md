@@ -7,7 +7,7 @@ without losing its structure. It works on the three kinds of data in a typical m
 |---|---|---|
 | Structural measurements | bedding, foliation points with dip and dip direction or strike | keeps fewer, representative measurements |
 | Faults | fault polylines | joins broken segments, adds attributes (length, network position, stratigraphic offset, orientation group) that rank the faults |
-| Geology | lithostratigraphic polygons | cleans the topology, merges small polygons into their best neighbour, simplifies boundaries |
+| Geology | lithostratigraphic polygons | cleans the topology, adds or removes nodes (with the faults), merges small polygons into their best neighbour, simplifies boundaries |
 
 All three can be reduced together to a smaller map scale with the Töpfer & Pillewizer rule.
 
@@ -103,7 +103,8 @@ these metadata statements (XML):
 3. If you will merge polygons or calculate fault offsets, set the **Geology Polygon Priorities**
    (Priority 1 = most detailed stratigraphic field, 4 = most general, 5 = lithology).
 4. Work through the tabs from left to right, which is the usual order:
-   - **Clean**: make the map topologically consistent (Fix Map) and, if needed, add nodes (Densify).
+   - **Clean**: make the map topologically consistent (Fix Map) and, if needed, add nodes (Densify) or
+     reduce the number of nodes (Thin Nodes).
    - **Points**: subsample the structural measurements.
    - **Faults**: merge broken segments, then add ranking attributes.
    - **Polygons**: merge small polygons, simplify boundaries, or scale the whole map with T&P.
@@ -143,6 +144,13 @@ Hover over any control for a tooltip.
 
 Run the Clean tools first: Fault Graph, Strat Offset and Simplify Map all depend on lines meeting at
 shared nodes, and digitised maps rarely do.
+
+| Tool | Use it to |
+|---|---|
+| **Fix Map** | make polygons and faults share nodes, and remove gaps, overlaps and doubled features |
+| **Repair (buffer 0)** | only repair invalid (self-intersecting) polygons |
+| **Densify Nodes** | add nodes, so no segment is longer than a spacing |
+| **Thin Nodes** | reduce the number of nodes, so no two nodes are closer than a spacing |
 
 ### Fix Map
 
@@ -202,9 +210,10 @@ Outputs are `<layer>_dense` for each selected layer.
 
 ### Thin Nodes
 
-The opposite of Densify: removes nodes that are closer together than a chosen distance, and keeps the
-layers consistent. A node on a boundary shared by two polygons, or followed by a fault, is removed from
-all of them at once, so the boundary and the fault stay on top of each other.
+Reduces the number of nodes (vertices) in the polygon and fault layers: the opposite of Densify. It
+removes nodes that are closer together than a chosen distance, and keeps the layers consistent. A node
+on a boundary shared by two polygons, or followed by a fault, is removed from all of them at once, so the
+boundary and the fault stay on top of each other.
 
 | Setting | Meaning |
 |---|---|
@@ -227,8 +236,26 @@ across a bend narrower than the spacing.
 
 Run **Fix Map** first: only nodes that are exactly shared (to 1 µm) are treated as shared.
 
+**Example** (Fix Map output of the example geology and faults, 50 m, about 2 s): 173 638 -> 114 379
+vertices; 17 close nodes kept to avoid self-intersections. With 20 m: 142 442 vertices; with 100 m: 84 632.
+
+![Thin Nodes before and after](images/thin_before_after.png)
+
+*Faults (blue) that run along contacts lose the same nodes as the contact; the nodes where faults cross or
+leave contacts, and the triple junctions, are kept.*
+
 Outputs are `<layer>_thin` for each selected layer. In QGIS each round's progress is printed in the Python
 console; in ArcGIS Pro it goes to the log.
+
+**Thin Nodes or Simplify Map?** Both reduce the number of nodes and keep shared boundaries and faults
+consistent. Choose by what you want to control:
+
+| | Thin Nodes (Clean tab) | [Simplify Map](#simplify-map) (Polygons tab) |
+|---|---|---|
+| Removes a node when | it is closer than **Min Node Spacing** to a neighbour | the triangle it makes with its two neighbours is smaller than **Area Tolerance** |
+| Effect | even spacing; straight runs of close nodes go, isolated nodes stay | flattest bends go first, whatever the spacing; shapes are simplified |
+| Layers | polygons and/or faults | needs both |
+| Use it | to remove over-digitised nodes before other tools, or after Densify | to simplify the map for a smaller scale |
 
 ---
 
@@ -413,6 +440,7 @@ A small polygon with no neighbour within the tolerance is kept.
 Removes vertices from the polygon boundaries and faults together, keeping them topologically consistent:
 shared boundaries are simplified the same way on both sides, junctions and fault-contact crossings are
 never removed, and every pair of units in contact stays in contact. Needs both the polygon and fault layers.
+To remove nodes by spacing instead of by shape, use [Thin Nodes](#thin-nodes) on the Clean tab.
 
 - **Area Tolerance (m2)**: a vertex is removed while the triangle it forms with its two neighbours is
   smaller than this area (Visvalingam-Whyatt). Larger = simpler. Default 10 000 m².

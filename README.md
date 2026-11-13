@@ -20,7 +20,7 @@ was made, in a metadata file beside it.
 
 | Tab | Tools |
 |-----|-------|
-| Clean | **Fix Map** (topological clean-up of polygons and faults, with a report), **Repair** (buffer 0), **Densify Nodes** (shared nodes at a fixed spacing) |
+| Clean | **Fix Map** (topological clean-up of polygons and faults, with a report), **Repair** (buffer 0), **Densify Nodes** (shared nodes at a fixed spacing), **Thin Nodes** (fewer nodes: removes nodes closer than a minimum spacing, keeping shared boundaries and faults consistent) |
 | Points | Orientation subsampling: **Stochastic**, **Kent** grid averaging (optional kappa filter), **Kent Outlier**, **Carmichael**, **1o Sampling**, with **Auto-fit to N points** |
 | Faults | **Merge Segments**; fault attributes: **Length**, **Graph** (network edge types), **Strat Offset**, **Orientation Clusters** |
 | Polygons | **Rescale Map** (merge small polygons by stratigraphic priority), **Simplify Map** (topology-preserving Visvalingam-Whyatt), **Töpfer & Pillewizer scaling** of points, faults and polygons together |
