@@ -5,7 +5,7 @@ it subsamples structural orientation data, joins and ranks faults, cleans and me
 and scales a whole map to a smaller scale with the Töpfer & Pillewizer rule. Every result records how it
 was made, in a metadata file beside it.
 
-![The GeoSubSampler dock in QGIS](docs/images/gui_clean.png)
+![The GeoSubSampler dock in QGIS](docs/images/faults_attributes.png)
 
 ## Documentation
 
