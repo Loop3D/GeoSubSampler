@@ -196,6 +196,14 @@ Another short conform then gives the new edges shared nodes.
   and at T-junctions. Both lines get the same node. A local conform then merges any crossing node within
   the tolerance of another node. Repeated once if it changed anything.
 * **Final repair** of anything still self-intersecting.
+* **Fault loops** (`remove_line_loops`): snapping a fault vertex onto a node, and adding the same node to a
+  nearby segment of the same fault, can make the fault pass through that node twice with a loop of a few
+  metres between (typically where the fault was digitised with a hairpin or spike, or runs out along a
+  contact and back). Where a fault passes through the same point twice and every vertex between lies within
+  2 × the tolerance of it, those vertices are dropped; any of them lying along one of the two segments that
+  now meet at the point (inside it, within the tolerance) are put back in order along it, so a fault that
+  ran along a contact keeps the contact's nodes once. Nothing is moved. Larger loops are left, and every
+  fault that still crosses or touches itself is listed in the report.
 * **Report**: before -> after counts and everything removed.
 
 #### Report lines
@@ -212,8 +220,8 @@ Another short conform then gives the new edges shared nodes.
 
 Promises: no vertex moves more than the tolerance (the report gives the largest move); polygons are never
 moved by faults and bigger polygons never by smaller ones; shared boundaries have identical nodes; nothing
-overlaps (default rule); enclosed gaps are filled (if ticked); no duplicates; no invalid polygons;
-attributes are never edited. When the result is noded with GEOS no node needs adding (checked on
+overlaps (default rule); enclosed gaps are filled (if ticked); no duplicates; no invalid polygons; no fault
+loops within 2 × the tolerance (faults still crossing themselves are listed); attributes are never edited. When the result is noded with GEOS no node needs adding (checked on
 1 121-polygon and 11 801-polygon / 3.9-million-vertex maps).
 
 Limits:
@@ -232,6 +240,7 @@ Limits:
 |---|---|
 | Pipeline, report | `fix_map` |
 | Repair, duplicates, polygons inside polygons | `repair_polygons`, `remove_duplicates`, `cut_contained_polygons` |
+| Fault loops | `remove_line_loops`, `_cut_loops`, `_on_segment` |
 | Conform | `_candidates`, `_conform_pass`, `_conform`, `_insert_nodes`, `_cleanup` |
 | Thin overlaps, remaining overlaps, gaps | `resolve_thin_overlaps`, `remove_overlaps`, `fill_thin_gaps`, `_gap_polygons` |
 | Counts | `topology_report`, `_count_defects` |

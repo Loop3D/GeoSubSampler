@@ -10,6 +10,9 @@ All notable changes to GeoSubSampler, newest first. See the [README](README.md) 
 - Merge Segments no longer drops the end of the second fault at a join: when the two ends are apart (up to Dist.),
   both are kept and joined by a straight segment. Before, the merged fault cut across from one end to the second
   vertex of the other fault, moving it by up to the Dist. setting (up to 9 m in a test with Dist. = 10 m).
+- Fix Map no longer leaves faults crossing themselves: where snapping made a fault pass through the same node twice
+  (3 faults in the example data), the small loop between is cut out without moving anything, and any fault that still
+  crosses itself is listed in the report. Report indexes print as plain numbers.
 - QGIS: a GeoPackage layer's shapefile copy is redone whenever the GeoPackage has changed; before, the first copy was
   reused for good, so tools could run on out-of-date features.
 - Fault results (Length, Graph, Strat Offset, Clusters) are coloured by their new attribute, in QGIS and ArcGIS Pro.

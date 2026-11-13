@@ -133,6 +133,97 @@ def repair_polygons(gdf):
     return res, info
 
 
+def _plain_index(x):
+    """A feature index as a plain Python value, so the report shows 909 rather than np.int64(909)."""
+    return x.item() if hasattr(x, "item") else x
+
+
+def _on_segment(a, b, pts, K, near_m):
+    """Of the points (m, 2), those within ``near_m`` metres of the inside of segment a-b, ordered from a to b."""
+    if len(pts) == 0:
+        return []
+    A, B, Q = np.asarray(a) * K, np.asarray(b) * K, np.asarray(pts) * K
+    d = B - A
+    L2 = float(d @ d)
+    if L2 == 0:
+        return []
+    t = ((Q - A) @ d) / L2
+    dist = np.hypot(*(Q - (A + t[:, None] * d)).T)
+    keep = (t > 0) & (t < 1) & (dist <= near_m)
+    return [tuple(pts[k]) for k in np.flatnonzero(keep)[np.argsort(t[keep], kind="stable")]]
+
+
+def _cut_loops(c, max_m, K, near_m=0.0):
+    """
+    Cut the loops out of one line's vertices (n, 2): wherever the line passes through the same point twice,
+    the vertices between the two visits are dropped, if all of them lie within ``max_m`` metres of that point
+    (K: metres per layer unit in x and y). Dropped vertices lying along one of the two segments now meeting at
+    the point (within ``near_m`` metres of it) are put back on it, in order, so that a fault that ran out along
+    a contact and back keeps the contact's nodes once. Repeated neighbouring vertices are merged. A closed line
+    keeps its closing vertex. Returns (vertices, loops cut, a larger loop was left).
+    """
+    closed = len(c) > 3 and (c[0] == c[-1]).all()
+    body = [tuple(p) for p in (c[:-1] if closed else c)]
+    cut = 0
+    big = False
+    for _ in range(4 * len(body) + 4):              # every step shortens the line or fixes a loop; bounded anyway
+        seen, done = {}, True
+        for pos, xy in enumerate(body):
+            i = seen.get(xy)
+            if i is not None:
+                loop = np.asarray(body[i:pos + 1])
+                extent = np.hypot(*((loop - loop[0]) * K).T).max()
+                if pos - i == 1 or extent <= max_m:
+                    dropped = body[i + 1:pos]
+                    body = body[:i + 1] + body[pos + 1:]
+                    if dropped and near_m > 0:
+                        present = set(body)
+                        dropped = list(dict.fromkeys(p for p in dropped if p not in present))
+                        after = _on_segment(xy, body[i + 1], np.asarray(dropped), K, near_m) if i + 1 < len(body) else []
+                        rest = [p for p in dropped if p not in set(after)]
+                        before = _on_segment(body[i - 1], xy, np.asarray(rest), K, near_m) if i > 0 and rest else []
+                        body = body[:i] + before + [xy] + after + body[i + 1:]
+                    cut += pos - i > 1
+                    done = False
+                    break
+                big = True
+            seen[xy] = pos
+        if done:
+            break
+    out = np.asarray(body + ([body[0]] if closed else []))
+    return out, cut, big
+
+
+def remove_line_loops(gdf, max_m, K, near_m=0.0):
+    """
+    Cut short loops out of lines.  Snapping a vertex onto a node, and adding that node to a nearby segment of the
+    same line, can make a line pass through the node twice with a loop of a few metres in between (often where the
+    line was digitised with a hairpin or spike).  Loops whose vertices all lie within ``max_m`` metres of the
+    repeated point are cut out; nothing is moved.  Returns (gdf, info): info has "loops" (number cut), "indices"
+    (features changed) and "left" (features that still cross or touch themselves).
+    """
+    geoms = gdf.geometry.values.copy()
+    info = {"loops": 0, "indices": [], "left": []}
+    ok = ~shapely.is_missing(geoms) & ~shapely.is_empty(geoms)
+    for k in np.flatnonzero(ok & ~shapely.is_simple(np.where(ok, geoms, None))):
+        parts = shapely.get_parts(geoms[k])
+        new_parts, n_cut = [], 0
+        for part in parts:
+            c = shapely.get_coordinates(part)
+            c2, cut, _ = _cut_loops(c, max_m, K, near_m)
+            n_cut += cut
+            new_parts.append(shapely.linestrings(c2) if len(c2) >= 2 and cut else part)
+        if n_cut:
+            geoms[k] = new_parts[0] if shapely.get_type_id(geoms[k]) == 1 else shapely.multilinestrings(new_parts)
+            info["loops"] += n_cut
+            info["indices"].append(_plain_index(gdf.index[k]))
+        if not shapely.is_simple(geoms[k]):
+            info["left"].append(_plain_index(gdf.index[k]))
+    res = gdf.copy()
+    res["geometry"] = gpd.GeoSeries(geoms, index=gdf.index, crs=gdf.crs)
+    return res, info
+
+
 def remove_duplicates(gdf):
     """Remove features whose geometry is identical (any start point / direction) to an earlier one."""
     geoms = gdf.geometry.values
@@ -1170,6 +1261,18 @@ def fix_map(layers, tol_m, geographic=None, repair=True, node_crossings=True, mi
                 stats["repair_final"] = rinfo
                 log(f"Repaired {rinfo['repaired']} polygons that were still self-intersecting at the end")
 
+    # the same for faults: a vertex snapped onto a node and that node added to a nearby segment of the same fault
+    # make the fault pass through the node twice, with a small loop in between; cut such loops out
+    for i, (g, k) in enumerate(zip(work, kinds)):
+        if k == "line":
+            work[i], linfo = remove_line_loops(g, 2.0 * float(tol_m), K, near_m=float(tol_m))
+            if linfo["loops"] or linfo["left"]:
+                sl = stats.setdefault("line_loops", {"loops": 0, "indices": [], "left": []})
+                for key in sl:
+                    sl[key] += linfo[key]
+            if linfo["loops"]:
+                log(f"Cut {linfo['loops']} small loops out of {len(linfo['indices'])} faults that passed through a node twice")
+
     # the last conform rounds, the crossing nodes and the final repair can move an edge by up to the tolerance (or add
     # a loop back), which can open a small new overlap after the settle step: one last sweep with the same rule
     if overlap_rule:
@@ -1260,6 +1363,10 @@ def fix_map(layers, tol_m, geographic=None, repair=True, node_crossings=True, mi
             f"added where the ring crosses itself): {r['repaired']} of {r['invalid']}; feature index {r['indices']}")
     for r in stats.get("repair_after", []):
         log(f"Polygons that became invalid while snapping and were repaired again: {r['repaired']} of {r['invalid']}")
+    if stats.get("line_loops", {}).get("loops"):
+        sl = stats["line_loops"]
+        log(f"Small loops cut out of faults that passed through the same node twice (all within {2 * tol_m:g} m of "
+            f"that node; nothing moved): {sl['loops']} in {len(sl['indices'])} faults; feature index {sl['indices'][:20]}")
     if _OVERLAY_FAILS:
         uniq_f = sorted(set(_OVERLAY_FAILS))
         log(f"{len(_OVERLAY_FAILS)} geometry operations were skipped because GEOS could not do them even after repair and "
@@ -1295,6 +1402,10 @@ def fix_map(layers, tol_m, geographic=None, repair=True, node_crossings=True, mi
             still += [(g.index[j], shapely.is_valid_reason(geoms[j])) for j in bad]
     if still:
         log("Polygons still invalid (edit by hand): " + "; ".join(f"{i}: {r}" for i, r in still[:10]))
+    left_faults = stats.get("line_loops", {}).get("left", [])
+    if left_faults:
+        log(f"Faults that still cross or touch themselves (edit by hand): {len(left_faults)}; "
+            f"feature index {left_faults[:20]}")
     log("")
     log("BEFORE -> AFTER")
     log("-" * 60)

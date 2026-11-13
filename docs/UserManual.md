@@ -185,6 +185,9 @@ open it in a text editor to follow a long run.
 
 Read the report's **WHAT WAS DONE** section for anything removed (listed by feature index): duplicates,
 polygons completely covered by smaller ones, and features narrower than the tolerance that collapsed.
+It also lists faults from which a small loop was cut: snapping can make a fault pass through the same node
+twice (for example where it was digitised with a hairpin), and the few metres of loop between are removed
+without moving anything. Any fault that still crosses itself is listed for you to edit by hand.
 Attributes are never edited. How it works step by step:
 [Reference Manual, Fix Map](ReferenceManual.md#21-fix-map).
 
@@ -236,8 +239,8 @@ across a bend narrower than the spacing.
 
 Run **Fix Map** first: only nodes that are exactly shared (to 1 µm) are treated as shared.
 
-**Example** (Fix Map output of the example geology and faults, 50 m, about 2 s): 173 638 -> 114 379
-vertices; 17 close nodes kept to avoid self-intersections. With 20 m: 142 442 vertices; with 100 m: 84 632.
+**Example** (Fix Map output of the example geology and faults, 50 m, about 2 s): 173 635 -> 114 358
+vertices; 14 close nodes kept to avoid self-intersections. With 20 m: 142 421 vertices; with 100 m: 84 611.
 
 ![Thin Nodes before and after](images/thin_before_after.png)
 
