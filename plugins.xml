@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugins>
+  <pyqgis_plugin name="GeoSubSampler" version="0.5.1" plugin_id="GeoSubSampler">
+    <description>Subsamples geological orientations, faults and polygons</description>
+    <about>Takes shapefiles of stratural orientation data, fault polylines and lithostratigraphic polygons and converts them to subsampled equivalents. An ArcGIS Pro version (Python toolbox with a Tkinter interface) is included in the ARCGIS folder of the repository.</about>
+    <version>0.5.1</version>
+    <qgis_minimum_version>3.24</qgis_minimum_version>
+    <qgis_maximum_version>4.99</qgis_maximum_version>
+    <homepage>https://github.com/Loop3D/GeoSubSampler</homepage>
+    <file_name>GeoSubSampler.zip</file_name>
+    <icon>icon.png</icon>
+    <author_name>Ranee Joshi, Mark Jessell</author_name>
+    <download_url>https://github.com/Loop3D/GeoSubSampler/releases/download/v0.5.1/GeoSubSampler.zip</download_url>
+    <uploaded_by>Ranee Joshi, Mark Jessell</uploaded_by>
+    <create_date>2026-11-17</create_date>
+    <update_date>2026-11-17</update_date>
+    <experimental>True</experimental>
+    <deprecated>False</deprecated>
+    <tracker>https://github.com/Loop3D/GeoSubSampler</tracker>
+    <repository>https://github.com/Loop3D/GeoSubSampler</repository>
+    <tags>python</tags>
+    <server>False</server>
+  </pyqgis_plugin>
+</plugins>
