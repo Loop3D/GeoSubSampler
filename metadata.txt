@@ -13,8 +13,8 @@ email=raneejoshi@gmail.com
 
 about=Takes shapefiles of stratural orientation data, fault polylines and lithostratigraphic polygons and converts them to subsampled equivalents. An ArcGIS Pro version (Python toolbox with a Tkinter interface) is included in the ARCGIS folder of the repository.
 
-tracker=http://bugs
-repository=http://repo
+tracker=https://github.com/Loop3D/GeoSubSampler
+repository=https://github.com/Loop3D/GeoSubSampler
 # End of mandatory metadata
 
 # Recommended items:
@@ -26,7 +26,7 @@ changelog=0.5.1 - Every result now gets a metadata file (<file>.sgt.xml, the sam
 # Tags are comma separated with spaces allowed
 tags=python
 
-homepage=http://homepage
+homepage=https://github.com/Loop3D/GeoSubSampler
 category=Plugins
 icon=icon.png
 # experimental flag
